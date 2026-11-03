@@ -1,6 +1,6 @@
 # VR Video Streamer
 
-Stream your desktop, application windows, local video files and online videos to VR video players.
+Stream your desktop monitor, application windows, local video files, music files and online videos to VR video players.
 
 **[Download the latest version](https://github.com/Kubi-Cle/VR-Video-Streamer/releases/latest)**
 
@@ -8,7 +8,7 @@ Stream your desktop, application windows, local video files and online videos to
 
 ## Features
 
-- Stream a monitor, a program, a video or music file, or an online video
+- Stream a desktop monitor, application windows, local video files, music files, or online video
 - Search YouTube and queue videos while you're streaming
 - Find subtitles online or generate them with AI
 - Share a public link, with a live preview of what viewers see
@@ -19,7 +19,8 @@ Needs Windows 10 (version 2004 or newer) or Windows 11, 64-bit.
 
 1. Download `VR-Video-Streamer-1.1.0.zip` from the link above and extract it.
 2. Open `VR Video Streamer.exe`. It offers to download FFmpeg, the video tool it needs, on first run.
-3. Press **Start streaming** and paste the public link into a video player in your VR game.
+3. Select what you would video and audio source you would like to stream.
+4. Press **Start streaming** and paste the public link into a video player in your VR video player.
 
 Windows may show a warning because the program isn't digitally signed. [`README.txt`](README.txt) has the full steps and troubleshooting.
 
