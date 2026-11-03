@@ -1,0 +1,25 @@
+# Big tools: they're in the release zip, or the program downloads them
+app/tools/*.exe
+app/tools/youtube/
+app/tools/ffmpeg/
+app/tools/whisper/
+
+# Made while running
+app/tools/*.log
+app/tools/*.err
+app/tools/*.zip
+app/tools/*.7z
+app/tools/*.sha256
+app/tools/known_hosts
+app/tools/mediamtx-stream.yml
+app/tools/ffmpeg-unpack/
+app/tools/whisper-unpack/
+
+# The finished zip goes on the Releases page
+release/
+
+# Never keys or tokens
+*.key
+*.token
+tunnel_key*
+settings.json

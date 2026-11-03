@@ -1,0 +1,239 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VR Video Streamer" Width="960" Height="1060" MinWidth="880" MinHeight="560"
+        WindowStartupLocation="CenterScreen" AllowDrop="True">
+    <Grid Margin="9,6,9,9">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Margin="3,0,0,7">
+            <Border x:Name="pillLive" Background="{StaticResource Danger}" CornerRadius="5" Padding="8,2" Margin="0,0,8,0" Visibility="Collapsed">
+                <TextBlock Text="Live" Foreground="{StaticResource OnDanger}" FontWeight="SemiBold" FontSize="12"/>
+            </Border>
+            <TextBlock x:Name="lblStat" Text="Ready" Style="{StaticResource MutedText}"/>
+            <TextBlock x:Name="lblViewers" Style="{StaticResource MutedText}" Margin="14,0,0,0" ToolTip="Worked out from how much the stream is sending, so it's an estimate"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.75*"/>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0">
+                <StackPanel>
+                    <!-- What to stream -->
+                    <Border Style="{StaticResource CardBox}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <DockPanel Margin="0,0,0,8">
+                                <Button x:Name="btnStart" DockPanel.Dock="Right" Content="Start streaming" Style="{StaticResource AccentButton}"/>
+                                <Button x:Name="btnStop" DockPanel.Dock="Right" Content="Stop stream" Style="{StaticResource StopButton}" Visibility="Collapsed"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton x:Name="rbMonitor" GroupName="Source" Style="{StaticResource SourceTab}" IsChecked="True">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE7F4;" Margin="0,0,6,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/><TextBlock Text="Monitor" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/></StackPanel>
+                                    </RadioButton>
+                                    <RadioButton x:Name="rbWindow" GroupName="Source" Style="{StaticResource SourceTab}">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE737;" Margin="0,0,6,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/><TextBlock Text="Program" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/></StackPanel>
+                                    </RadioButton>
+                                    <RadioButton x:Name="rbFile" GroupName="Source" Style="{StaticResource SourceTab}">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE714;" Margin="0,0,6,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/><TextBlock Text="File or YouTube" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/></StackPanel>
+                                    </RadioButton>
+                                </StackPanel>
+                            </DockPanel>
+                            <ComboBox x:Name="cbMonitor"/>
+                            <DockPanel x:Name="pnlWindow">
+                                <Button x:Name="btnRefresh" DockPanel.Dock="Right" Content="Refresh" Margin="6,0,0,0"/>
+                                <ComboBox x:Name="cbWindow"/>
+                            </DockPanel>
+                            <DockPanel x:Name="pnlFile">
+                                <CheckBox x:Name="chkLoop" DockPanel.Dock="Right" Content="Loop" Margin="10,0,0,0"/>
+                                <Button x:Name="btnBrowse" DockPanel.Dock="Right" Content="Browse" Margin="6,0,0,0"/>
+                                <TextBox x:Name="tbFile"/>
+                            </DockPanel>
+                            <DockPanel Margin="1,8,0,0">
+                                <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xE7BA;" FontSize="13" Foreground="#EF9F27" Margin="0,1,7,0" VerticalAlignment="Top"/>
+                                <TextBlock Foreground="#EF9F27" FontSize="12" TextWrapping="Wrap" Text="Don't start and stop streams too many times too quickly, or you may be rate limited and have to wait before you can get a new public link."/>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Picture and video controls -->
+                    <Border Style="{StaticResource CardBox}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <Border Height="190" Background="{StaticResource Selected}" CornerRadius="7" Margin="0,0,0,8" ClipToBounds="True">
+                                <Grid>
+                                    <TextBlock x:Name="lblPreview" Text="A preview of what viewers see appears here" Foreground="{StaticResource Accent}" HorizontalAlignment="Center"/>
+                                    <Image x:Name="imgPreview" Stretch="Uniform"/>
+                                    <Border Background="#B010181A" CornerRadius="6" Padding="7,4" Margin="7" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                        <CheckBox x:Name="chkPreview" Content="Preview" ToolTip="Turning this off saves CPU. Viewers aren't affected."/>
+                                    </Border>
+                                </Grid>
+                            </Border>
+                            <StackPanel x:Name="pnlPlayer">
+                                <TextBlock x:Name="lblNow" Text="Nothing playing" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <Slider x:Name="seekBar" Minimum="0" Maximum="1000" IsMoveToPointEnabled="True" Margin="0,5"/>
+                                <DockPanel>
+                                    <TextBlock x:Name="lblTimeLeft" Text="--:--" DockPanel.Dock="Left" Style="{StaticResource MutedText}" MinWidth="48"/>
+                                    <TextBlock x:Name="lblTimeRight" Text="--:--" DockPanel.Dock="Right" Style="{StaticResource MutedText}" MinWidth="48" TextAlignment="Right"/>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <Button x:Name="btnBack" Content="-10 s" Margin="0,0,5,0"/>
+                                        <Button x:Name="btnPlay" Style="{StaticResource AccentButton}" Margin="0,0,5,0" MinWidth="40" ToolTip="Play or pause" HorizontalContentAlignment="Center">
+                                            <TextBlock x:Name="lblPlay" Style="{StaticResource Icon}" Text="&#xE769;" Foreground="{StaticResource OnAccent}"/>
+                                        </Button>
+                                        <Button x:Name="btnFwd" Content="+10 s" Margin="0,0,5,0"/>
+                                        <Button x:Name="btnSkip" Margin="0,0,5,0" ToolTip="Play the next video in Up next">
+                                            <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE893;" Margin="0,0,6,0"/><TextBlock Text="Skip"/></StackPanel>
+                                        </Button>
+                                        <Button x:Name="btnChange" Content="Change video"/>
+                                    </StackPanel>
+                                </DockPanel>
+                                <DockPanel Margin="0,8,0,0">
+                                    <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xE767;" Foreground="{StaticResource Muted}" Margin="0,0,8,0" ToolTip="What viewers hear"/>
+                                    <TextBlock x:Name="lblVolume" DockPanel.Dock="Left" Text="100%" Style="{StaticResource MutedText}" MinWidth="40"/>
+                                    <Button x:Name="btnAudio" DockPanel.Dock="Right" Content="Sound track" Margin="10,0,0,0" ToolTip="Choose between this file's sound tracks"/>
+                                    <CheckBox x:Name="chkEvenOut" DockPanel.Dock="Right" Content="Even out volume" Margin="12,0,0,0" ToolTip="Brings quiet parts up and loud parts down"/>
+                                    <Slider x:Name="sliderVolume" Minimum="0" Maximum="200" Value="100" IsMoveToPointEnabled="True"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Subtitles -->
+                    <Border Style="{StaticResource CardBox}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <Button x:Name="btnSubs" HorizontalContentAlignment="Stretch" Margin="0,0,0,8" ToolTip="See the subtitles available for this video">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xED1E;" FontSize="16" Foreground="{StaticResource Accent}" Margin="0,0,8,0"/>
+                                    <TextBlock DockPanel.Dock="Right" Style="{StaticResource Icon}" Text="&#xE70D;" FontSize="11" Foreground="{StaticResource Muted}"/>
+                                    <TextBlock x:Name="lblSubs" Text="Subtitles off" TextTrimming="CharacterEllipsis"/>
+                                </DockPanel>
+                            </Button>
+                            <DockPanel>
+                                <TextBlock Text="Timing" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                <Button x:Name="btnSubsBack5" Content="-5 s" Margin="0,0,5,0"/>
+                                <Button x:Name="btnSubsBack" Content="-0.5 s" Margin="0,0,5,0"/>
+                                <Button x:Name="btnSubsFwd" Content="+0.5 s" Margin="0,0,5,0"/>
+                                <Button x:Name="btnSubsFwd5" Content="+5 s" Margin="0,0,5,0"/>
+                                <TextBlock x:Name="lblSubsOffset" Style="{StaticResource MutedText}" Margin="3,0,0,0"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <TextBlock x:Name="lblSubsTime" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                    <Button x:Name="btnSubsPause" Content="Pause" Margin="0,0,5,0"/>
+                                    <Button x:Name="btnSubsRestart" Content="Restart"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Links -->
+                    <Border Style="{StaticResource CardBox}" Margin="0,0,0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Everyone (public)" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbPublic" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyPublic" Grid.Column="2" Content="Copy" Style="{StaticResource AccentButton}" Margin="6,2,0,2"/>
+                            <TextBlock Grid.Row="1" Text="Headset on your Wi-Fi" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbLan" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyLan" Grid.Row="1" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <TextBlock Grid.Row="2" Text="Game Window on this PC" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbLocal" Grid.Row="2" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyLocal" Grid.Row="2" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <TextBlock Grid.Row="3" Text="Low delay (PC, RTSP)" Style="{StaticResource MutedText}"/>
+                            <TextBox x:Name="tbRtsp" Grid.Row="3" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyRtsp" Grid.Row="3" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Options -->
+                    <Border x:Name="pnlOptions" Style="{StaticResource CardBox}">
+                        <StackPanel>
+                            <DockPanel Margin="0,0,0,8">
+                                <ComboBox x:Name="cbTunnel" DockPanel.Dock="Right" Width="180"/>
+                                <CheckBox x:Name="chkPublic" Content="Let other people view the video player (public link), via" IsChecked="True"/>
+                            </DockPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Quality" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="cbQuality" Grid.Column="1"/>
+                                <TextBlock Grid.Column="3" Text="Encoder" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="cbEncoder" Grid.Column="4"/>
+                            </Grid>
+                            <DockPanel Margin="0,8,0,0">
+                                <TextBlock Text="Audio bitrate" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="cbAudioQuality" Width="110" HorizontalAlignment="Left" ToolTip="Higher sounds better and uses a little more upload. Applies from the next Start."/>
+                            </DockPanel>
+                            <DockPanel Margin="0,8,0,0">
+                                <Button x:Name="btnPermanent" DockPanel.Dock="Right" Content="Permanent link" Margin="6,0,0,0" ToolTip="Keep the same public link every time, using your own Cloudflare account"/>
+                                <Button x:Name="btnTestUpload" DockPanel.Dock="Right" Content="Test my upload" ToolTip="Measures your upload speed and suggests a quality"/>
+                                <CheckBox x:Name="chkCard" Content="Show a screen while paused and between videos"/>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Up next, or the sound sources for captures (files play their own sound) -->
+            <Border Grid.Column="2" Style="{StaticResource CardBox}">
+                <Grid>
+                    <Grid x:Name="pnlQueue">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <TextBox x:Name="tbYouTube"/>
+                            <TextBlock x:Name="lblYouTubeHint" Text="Search YouTube, or paste a video link" Style="{StaticResource MutedText}" Margin="9,0,0,0" IsHitTestVisible="False"/>
+                        </Grid>
+                        <Button x:Name="btnYouTube" Grid.Row="1" Content="Add link or search" Margin="0,6,0,0" HorizontalContentAlignment="Center"/>
+                        <TextBlock x:Name="lblQueue" Grid.Row="2" Text="Up next" FontWeight="SemiBold" Margin="0,10,0,4"/>
+                        <Grid Grid.Row="3">
+                            <TextBlock x:Name="lblQueueEmpty" Text="Drop files here, or add a YouTube video above" Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" Margin="10,0"/>
+                            <ListBox x:Name="lbQueue"/>
+                        </Grid>
+                        <StackPanel Grid.Row="4" Margin="0,6,0,0">
+                            <Button x:Name="btnAdd" Content="Add files" HorizontalContentAlignment="Center"/>
+                            <UniformGrid Columns="2" Margin="-3,3,-3,0">
+                                <Button x:Name="btnPlayNow" Content="Play now" Margin="3" HorizontalContentAlignment="Center"/>
+                                <Button x:Name="btnRemove" Content="Remove" Margin="3" HorizontalContentAlignment="Center"/>
+                                <Button x:Name="btnUp" Content="Move up" Margin="3" HorizontalContentAlignment="Center"/>
+                                <Button x:Name="btnDown" Content="Move down" Margin="3" HorizontalContentAlignment="Center"/>
+                                <Button x:Name="btnShuffle" Content="Shuffle" Margin="3" HorizontalContentAlignment="Center"/>
+                                <CheckBox x:Name="chkRepeat" Content="Repeat list" Margin="6,3,3,3" HorizontalAlignment="Center" ToolTip="Each video goes back to the end of the list after it plays"/>
+                                <Button x:Name="btnSaveList" Content="Save list" Margin="3" HorizontalContentAlignment="Center"/>
+                                <Button x:Name="btnLoadList" Content="Load list" Margin="3" HorizontalContentAlignment="Center"/>
+                            </UniformGrid>
+                            <Button x:Name="btnItemSubs" Margin="0,3,0,0" HorizontalContentAlignment="Center" ToolTip="Choose subtitles for the video selected in the list">
+                                <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xED1E;" Margin="0,0,6,0"/><TextBlock Text="Subtitles for this video"/></StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                    <Grid x:Name="pnlSound">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Sound: tick any to mix" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <ListBox x:Name="lbSound" Grid.Row="1"/>
+                        <Button x:Name="btnRefreshSound" Grid.Row="2" Content="Refresh list" Margin="0,6,0,0" HorizontalContentAlignment="Center"/>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <DockPanel Grid.Row="2" Margin="3,8,3,0">
+            <Button x:Name="btnReport" DockPanel.Dock="Right" Content="Copy problem report" VerticalAlignment="Top" Margin="10,0,0,0" ToolTip="Copies details about this PC and the last stream, to send to whoever's helping you. Your name and links are left out."/>
+            <TextBlock x:Name="lblStatus" MinHeight="36" Style="{StaticResource MutedText}" TextWrapping="Wrap" VerticalAlignment="Top"
+                       Text="Ready. Tip: drop a video or music file on this window."/>
+        </DockPanel>
+    </Grid>
+</Window>

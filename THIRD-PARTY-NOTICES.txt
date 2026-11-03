@@ -1,0 +1,18 @@
+VR Video Streamer includes these free programs, unchanged. Each belongs to its own authors and keeps its own licence.
+The licence texts are in app\tools\licenses.
+
+Included in this folder
+- MediaMTX (app\tools\mediamtx.exe)         MIT licence        https://github.com/bluenviron/mediamtx
+- cloudflared (app\tools\cloudflared.exe)   Apache 2.0 licence https://github.com/cloudflare/cloudflared
+- yt-dlp (app\tools\youtube\yt-dlp.exe)     Unlicense, with    https://github.com/yt-dlp/yt-dlp
+                                            third-party parts listed in yt-dlp-THIRD-PARTY.txt
+- Deno (app\tools\youtube\deno.exe)         MIT licence        https://github.com/denoland/deno
+
+Downloaded later by this program, only after asking
+- FFmpeg, builds from gyan.dev, GPL licence              https://www.gyan.dev/ffmpeg/builds/
+- Whisper speech models from whisper.cpp, MIT licence    https://huggingface.co/ggerganov/whisper.cpp
+- 7-Zip's 7zr.exe, on older Windows only, then removed   https://github.com/ip7z/7zip
+
+Services the program can connect to when you use the matching feature: Cloudflare, localhost.run, Pinggy, YouTube and
+other video sites, OpenSubtitles, and Cloudflare's speed test. This program isn't made by or connected with any of
+them.
