@@ -23,7 +23,7 @@ if (Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Mai
 
 $files = @("VR Video Streamer.exe", "README.txt", "LICENSE", "THIRD-PARTY-NOTICES.txt", "app\app.ico",
            "app\tools\cloudflared.exe", "app\tools\mediamtx.exe", "app\tools\youtube\yt-dlp.exe", "app\tools\youtube\deno.exe")
-$files += Get-ChildItem "$root\app" -File | Where-Object { $_.Extension -in ".ps1", ".cs", ".xaml" } | ForEach-Object { "app\$($_.Name)" }
+$files += Get-ChildItem "$root\app" -File | Where-Object { $_.Extension -in ".ps1", ".cs", ".xaml", ".html" } | ForEach-Object { "app\$($_.Name)" }
 $files += Get-ChildItem "$root\app\tools\licenses" -File | ForEach-Object { "app\tools\licenses\$($_.Name)" }
 
 "--- tools"
@@ -59,7 +59,7 @@ try {
     "--- privacy check"
     $private = @(Get-ChildItem "$stage\VR Video Streamer" -Recurse -File | Where-Object { $_.Name -match '\.(key|token|log|err|json|srt|part|vvslist|pem)$|tunnel_key|known_hosts|settings' })
     if ($private) { throw "Private-looking files: $($private.Name -join ', ')" }
-    $text = Get-ChildItem "$stage\VR Video Streamer" -Recurse -File | Where-Object { $_.Extension -in ".ps1", ".cs", ".xaml" -or $_.Name -eq "README.txt" }
+    $text = Get-ChildItem "$stage\VR Video Streamer" -Recurse -File | Where-Object { $_.Extension -in ".ps1", ".cs", ".xaml", ".html" -or $_.Name -eq "README.txt" }
     # This PC's names as whole words, email addresses, private keys, tokens, and home network addresses
     # (the profile folder's name can differ from the account's, so both are checked)
     $profileName = Split-Path $env:USERPROFILE -Leaf

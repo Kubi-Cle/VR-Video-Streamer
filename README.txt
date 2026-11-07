@@ -1,4 +1,4 @@
-VR Video Streamer, Version 1.1.0
+VR Video Streamer, Version 1.2.0
 Stream your desktop, application windows, local video files and online videos to VR video players.
 Needs Windows 10 (version 2004 or newer) or Windows 11, 64-bit.
 
@@ -13,6 +13,23 @@ START
 WATCH IN VR
 1. Choose what to stream and press Start streaming. The public link is copied for you.
 2. Paste it into a video player in your VR game.
+3. To stop hearing a program twice, turn on its "Mute on PC" switch in the sound list. It goes silent on your PC until you
+   press Stop, and viewers still hear it at its normal volume.
+
+You can change the Sound ticks while streaming. Videos with chapters get a Chapters button to jump between them.
+Each ticked sound has its own volume slider for viewers. If viewers hear things before they see them, move
+"Sound delay" to the right. Both work while streaming.
+
+Other links:
+- Short link: the same stream with a shorter ending, easier to type in a headset.
+- Remote control: a web page for pausing, skipping, jumping and adding YouTube links from a phone. Only give it to
+  people you trust. It stops working when you press Stop.
+- QR: shows a link as a code a phone camera can open.
+If the public link's service drops, it reconnects by itself without stopping the stream. A free link's address
+changes when that happens, and the window shows the new one.
+
+Subtitles menu: "Translate these" puts the subtitles showing into your language, using Google Translate (it sends the
+subtitle text to Google). The window remembers your choices for next time, and tells you when there's a newer version.
 
 Anyone with the link can watch until you press Stop, and it changes each time you start. Only share it with people
 you mean to, and only stream what you have the right to share.

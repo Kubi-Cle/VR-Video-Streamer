@@ -139,5 +139,6 @@ function Read-YouTubeStream($info) {
     $duration = 0.0
     [void][double]::TryParse([string]$info.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
     @{ File = (Get-PlayableAddress $main); AudioFile = $(if ($video -and $audio) { Get-PlayableAddress $audio }); Duration = $duration; Title = $info.title; HasAudio = $hasAudio; HasVideo = $hasVideo; Options = $options
-       Captions = @(Read-YouTubeCaptions $info) }
+       Captions = @(Read-YouTubeCaptions $info)
+       Chapters = @($info.chapters | Where-Object { $_ } | ForEach-Object { @{ Start = [double]$_.start_time; Title = "$($_.title)" } }) }
 }

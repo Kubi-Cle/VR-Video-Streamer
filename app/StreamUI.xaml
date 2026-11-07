@@ -15,6 +15,9 @@
             </Border>
             <TextBlock x:Name="lblStat" Text="Ready" Style="{StaticResource MutedText}"/>
             <TextBlock x:Name="lblViewers" Style="{StaticResource MutedText}" Margin="14,0,0,0" ToolTip="Worked out from how much the stream is sending, so it's an estimate"/>
+            <Button x:Name="btnUpdate" Margin="14,-3,0,-3" Padding="8,1" Visibility="Collapsed" ToolTip="Opens the download page in your web browser">
+                <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE896;" Margin="0,0,6,0" Foreground="{StaticResource Accent}"/><TextBlock x:Name="lblUpdate" Text="Update available"/></StackPanel>
+            </Button>
         </StackPanel>
 
         <Grid Grid.Row="1">
@@ -94,6 +97,7 @@
                                 <DockPanel Margin="0,8,0,0">
                                     <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xE767;" Foreground="{StaticResource Muted}" Margin="0,0,8,0" ToolTip="What viewers hear"/>
                                     <TextBlock x:Name="lblVolume" DockPanel.Dock="Left" Text="100%" Style="{StaticResource MutedText}" MinWidth="40"/>
+                                    <Button x:Name="btnChapters" DockPanel.Dock="Right" Content="Chapters" Margin="10,0,0,0" ToolTip="Jump to a chapter of this video"/>
                                     <Button x:Name="btnAudio" DockPanel.Dock="Right" Content="Sound track" Margin="10,0,0,0" ToolTip="Choose between this file's sound tracks"/>
                                     <CheckBox x:Name="chkEvenOut" DockPanel.Dock="Right" Content="Even out volume" Margin="12,0,0,0" ToolTip="Brings quiet parts up and loud parts down"/>
                                     <Slider x:Name="sliderVolume" Minimum="0" Maximum="200" Value="100" IsMoveToPointEnabled="True"/>
@@ -135,22 +139,33 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <TextBlock Text="Everyone (public)" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
                             <TextBox x:Name="tbPublic" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
                             <Button x:Name="btnCopyPublic" Grid.Column="2" Content="Copy" Style="{StaticResource AccentButton}" Margin="6,2,0,2"/>
-                            <TextBlock Grid.Row="1" Text="Headset on your Wi-Fi" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
-                            <TextBox x:Name="tbLan" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
-                            <Button x:Name="btnCopyLan" Grid.Row="1" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
-                            <TextBlock Grid.Row="2" Text="Game Window on this PC" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
-                            <TextBox x:Name="tbLocal" Grid.Row="2" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
-                            <Button x:Name="btnCopyLocal" Grid.Row="2" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
-                            <TextBlock Grid.Row="3" Text="Low delay (PC, RTSP)" Style="{StaticResource MutedText}"/>
-                            <TextBox x:Name="tbRtsp" Grid.Row="3" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
-                            <Button x:Name="btnCopyRtsp" Grid.Row="3" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <Button x:Name="btnQrPublic" Grid.Column="3" Content="QR" Margin="6,2,0,2" ToolTip="Show this link as a QR code, for phones"/>
+                            <TextBlock Grid.Row="1" Text="Short link" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbShort" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnShort" Grid.Row="1" Grid.Column="2" Content="Copy" Margin="6,2,0,2" ToolTip="The same stream as the public link, with a shorter ending that's easier to type in a headset"/>
+                            <Button x:Name="btnQrShort" Grid.Row="1" Grid.Column="3" Content="QR" Margin="6,2,0,2" ToolTip="Show this link as a QR code, for phones"/>
+                            <TextBlock Grid.Row="2" Text="Remote control" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbRemote" Grid.Row="2" Grid.Column="1" IsReadOnly="True" Margin="0,2" ToolTip="A web page for pausing, skipping and adding YouTube videos from a phone or another PC. Give it only to people you trust: it changes every time you press Start."/>
+                            <Button x:Name="btnCopyRemote" Grid.Row="2" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <Button x:Name="btnQrRemote" Grid.Row="2" Grid.Column="3" Content="QR" Margin="6,2,0,2" ToolTip="Show this link as a QR code, for phones"/>
+                            <TextBlock Grid.Row="3" Text="Headset on your Wi-Fi" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbLan" Grid.Row="3" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyLan" Grid.Row="3" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <Button x:Name="btnQrLan" Grid.Row="3" Grid.Column="3" Content="QR" Margin="6,2,0,2" ToolTip="Show this link as a QR code, for phones"/>
+                            <TextBlock Grid.Row="4" Text="Game Window on this PC" Style="{StaticResource MutedText}" Margin="0,0,10,0"/>
+                            <TextBox x:Name="tbLocal" Grid.Row="4" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyLocal" Grid.Row="4" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
+                            <TextBlock Grid.Row="5" Text="Low delay (PC, RTSP)" Style="{StaticResource MutedText}"/>
+                            <TextBox x:Name="tbRtsp" Grid.Row="5" Grid.Column="1" IsReadOnly="True" Margin="0,2"/>
+                            <Button x:Name="btnCopyRtsp" Grid.Row="5" Grid.Column="2" Content="Copy" Margin="6,2,0,2"/>
                         </Grid>
                     </Border>
 
@@ -222,9 +237,19 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Sound: tick any to mix" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                        <ListBox x:Name="lbSound" Grid.Row="1"/>
-                        <Button x:Name="btnRefreshSound" Grid.Row="2" Content="Refresh list" Margin="0,6,0,0" HorizontalContentAlignment="Center"/>
+                        <DockPanel Margin="0,0,0,6">
+                            <TextBlock DockPanel.Dock="Right" Text="Mute on PC" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="8,0,2,0" ToolTip="Silences a program on your PC while you stream, so you only hear it from the VR world. Viewers still hear it at its normal volume."/>
+                            <TextBlock Text="Sound: tick any to mix" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="You can change these while streaming"/>
+                        </DockPanel>
+                        <ListBox x:Name="lbSound" Grid.Row="1" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                        <StackPanel Grid.Row="2">
+                            <DockPanel Margin="0,8,0,0" ToolTip="If viewers hear things before the picture shows them, move this right until they match. You can change it while streaming.">
+                                <TextBlock Text="Sound delay" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="lblSoundDelay" DockPanel.Dock="Right" Text="0 ms" Style="{StaticResource MutedText}" MinWidth="58" TextAlignment="Right"/>
+                                <Slider x:Name="sliderSoundDelay" Minimum="0" Maximum="1000" SmallChange="10" LargeChange="50" IsMoveToPointEnabled="True" AutomationProperties.Name="Sound delay for viewers"/>
+                            </DockPanel>
+                            <Button x:Name="btnRefreshSound" Content="Refresh list" Margin="0,6,0,0" HorizontalContentAlignment="Center"/>
+                        </StackPanel>
                     </Grid>
                 </Grid>
             </Border>

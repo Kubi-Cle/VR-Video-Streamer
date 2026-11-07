@@ -65,6 +65,28 @@ function Show-Message($owner, $text, [string[]]$buttons = @("OK")) {
     $script:msgAnswer
 }
 
+# A link as a QR code, for opening it on a phone by pointing the camera at the screen
+function Show-QrCode($owner, $title, $link) {
+    $xaml = @"
+<Window $script:WindowHead Title="$([Security.SecurityElement]::Escape($title))" Width="400" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False">
+  <StackPanel Margin="16">
+    <Border Background="White" CornerRadius="6" Padding="6" HorizontalAlignment="Center">
+      <Image x:Name="imgCode" Width="300" Height="300" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+    </Border>
+    <TextBlock x:Name="lblLink" TextWrapping="Wrap" Margin="0,12,0,4" Style="{StaticResource MutedText}" TextAlignment="Center"/>
+    <TextBlock Text="Point a phone's camera at the code to open the link." TextWrapping="Wrap" TextAlignment="Center" Margin="0,0,0,12"/>
+    <Button x:Name="btnClose" Content="Close" HorizontalAlignment="Right" MinWidth="76" HorizontalContentAlignment="Center" Style="{StaticResource AccentButton}"/>
+  </StackPanel>
+</Window>
+"@
+    $qr = New-AppWindow $xaml $owner
+    $c = Get-NamedControls $qr $xaml
+    $c.imgCode.Source = [QrCode]::ToBitmap([QrCode]::Encode($link), 8)
+    $c.lblLink.Text = $link
+    $c.btnClose.Add_Click({ param($s) [System.Windows.Window]::GetWindow($s).Close() })
+    [void]$qr.ShowDialog()
+}
+
 # A progress window around an installer script, which does the work in its own process so Cancel can simply stop it.
 # $progress is run a few times a second and returns what to say. Returns whether it was cancelled.
 function Show-InstallProgress($owner, $text, $installer, $toolsDir, $errorFile, [scriptblock]$progress, $extraArguments = "") {
@@ -350,7 +372,7 @@ function Show-PermanentLinkDialog($owner) {
   <StackPanel Margin="16">
     <TextBlock TextWrapping="Wrap" Text="Keeps the same public link every stream. It needs a free Cloudflare account and a domain name of your own on that account."/>
     <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Text="1. In Cloudflare's Zero Trust dashboard, go to Networks, Tunnels, and create a Cloudflared tunnel."/>
-    <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Text="2. Add a public hostname, such as stream.yourdomain.com, with service type HTTP and URL 127.0.0.1:8888."/>
+    <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Text="2. Add a public hostname, such as stream.yourdomain.com, with service type HTTP and URL 127.0.0.1:8890. (8888 also works, but without the remote control link.)"/>
     <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Text="3. Copy the tunnel's token, the long text in its install command, and paste it here with the hostname."/>
     <Button x:Name="btnSite" Content="Open Cloudflare's dashboard" HorizontalAlignment="Left" Margin="0,12,0,12"/>
     <TextBlock Text="Hostname" Style="{StaticResource MutedText}"/>

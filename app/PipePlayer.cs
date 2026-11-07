@@ -10,6 +10,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.IO.Pipes;
 using System.Threading;
 
@@ -41,6 +42,12 @@ public class PipePlayer
 
     public volatile bool EvenOutVolume;  // takes effect when the decoder next starts, so call Restart after changing it
     public volatile int AudioTrack;      // which of a file's sound tracks; takes effect the same way
+    // Styled subtitles (.ass) that need their own fonts and positions, so libass draws them here rather than the
+    // plain text of SubtitleOverlay. SubsTrack is which subtitle track of SubsFile, -1 if it's a subtitle file itself.
+    // These take effect the same way too, and SubsDelay moves them later in seconds.
+    public volatile string SubsFile;
+    public volatile int SubsTrack = -1;
+    public double SubsDelay;
     int gainPercent = 100;
     public int VolumePercent { get { return Volatile.Read(ref gainPercent); } set { Volatile.Write(ref gainPercent, value); } }
 
@@ -103,6 +110,7 @@ public class PipePlayer
     {
         LastError = "";
         AudioTrack = 0;
+        SubsFile = null;
         lock (posLock)
         {
             media = new Media { File = file, AudioFile = audioFile, Options = options, Duration = duration, HasVideo = hasVideo, HasAudio = hasAudio };
@@ -253,9 +261,11 @@ public class PipePlayer
             // fps start_time=0 and aresample first_pts=0 both start at the seek point, so frame N and
             // audio chunk N always cover the same moment. The picture is fitted into the stream's fixed
             // size (black bars if the shape differs), so any file can follow any other.
+            string subsFile = SubsFile, subsFolder;
+            string subsFilter = SubsFilter(subsFile, SubsTrack, pos, out subsFolder);
             string args = "-nostdin -hide_banner -loglevel error " + inputs +
                 " -map " + vmap + " -vf \"fps=" + fps + ":start_time=0,scale=" + w + ":" + h +
-                ":force_original_aspect_ratio=decrease:force_divisible_by=2,pad=" + w + ":" + h +
+                ":force_original_aspect_ratio=decrease:force_divisible_by=2" + subsFilter + ",pad=" + w + ":" + h +
                 ":(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p\"" +
                 " -f rawvideo -y \\\\.\\pipe\\" + dv +
                 // dynaudnorm's settings keep how far it looks ahead to about half a second, so a video still starts promptly
@@ -265,6 +275,7 @@ public class PipePlayer
             {
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true
             };
+            if (subsFolder != null) psi.WorkingDirectory = subsFolder;
             var p = new Process { StartInfo = psi };
             p.ErrorDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) LastError = e.Data; };
             p.Start();
@@ -273,11 +284,36 @@ public class PipePlayer
         }
     }
 
+    // The filter drawing styled subtitles, after scaling so positions match the picture and before the black bars.
+    // Seeking restarts the picture's time at 0, so it's moved back to the film's time just for this filter. Given
+    // a video, the filter also loads the fonts embedded in it. The file is named relative to its folder, so a
+    // drive's colon never has to survive the filter's rules.
+    string SubsFilter(string file, int track, double pos, out string folder)
+    {
+        folder = null;
+        if (string.IsNullOrEmpty(file)) return "";
+        folder = Path.GetDirectoryName(file);
+        string options = "filename=" + FilterValue(Path.GetFileName(file));
+        if (track >= 0) options += ":si=" + track;
+        if (Directory.Exists(Path.Combine(folder, "fonts"))) options += ":fontsdir=fonts";
+        string at = (pos - SubsDelay).ToString("0.###", CultureInfo.InvariantCulture);
+        return ",setpts=PTS+(" + at + ")/TB,subtitles=" + options + ",setpts=PTS-(" + at + ")/TB";
+    }
+
+    // A name has to survive two rounds of ffmpeg's escaping: one for the filter's option, one for the filter graph
+    static string FilterValue(string s)
+    {
+        s = s.Replace("\\", "\\\\").Replace("'", "\\'").Replace(":", "\\:");
+        return s.Replace("\\", "\\\\").Replace("'", "\\'").Replace("[", "\\[").Replace("]", "\\]").Replace(",", "\\,").Replace(";", "\\;");
+    }
+
     // Addresses on the internet get to reconnect after a dropped connection instead of ending the video early
     static string InputArgs(string ss, string options, string file)
     {
-        string net = file.StartsWith("http", StringComparison.OrdinalIgnoreCase)
-            ? " -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 5" : "";
+        bool online = file.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+        string net = online ? " -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 5" : "";
+        // Full path, since the decoder's own folder can be the subtitles' rather than this program's
+        if (!online) file = Path.GetFullPath(file);
         return (ss != null ? "-ss " + ss : "") + net + (string.IsNullOrEmpty(options) ? "" : " " + options) + " -i \"" + file + "\"";
     }
 

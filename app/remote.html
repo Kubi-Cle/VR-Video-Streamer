@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>VR Video Streamer remote</title>
+<style>
+  :root { --bg: #f6f7f8; --card: #ffffff; --text: #16191c; --muted: #636b73; --line: #dde1e5; --accent: #1d7d74; --on-accent: #ffffff; --danger: #c43c3c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121517; --card: #1b1f22; --text: #e8ebee; --muted: #98a1a9; --line: #2c3236; --accent: #4fb8ab; --on-accent: #0b1513; --danger: #f09595; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 12px; display: flex; gap: 10px; align-items: center; }
+  .live { background: var(--danger); color: #fff; border-radius: 5px; padding: 1px 8px; font-size: 12px; display: none; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .now { font-weight: 600; font-size: 17px; overflow-wrap: anywhere; }
+  .bar { width: 100%; margin: 12px 0 2px; accent-color: var(--accent); }
+  .times { display: flex; justify-content: space-between; }
+  .buttons { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 8px; padding: 9px 14px; cursor: pointer; min-height: 42px; }
+  button.main { background: var(--accent); color: var(--on-accent); border-color: var(--accent); min-width: 92px; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .grow { flex: 1; }
+  form { display: flex; gap: 8px; }
+  input[type=url] { flex: 1; min-width: 0; font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  ol { margin: 6px 0 0; padding-left: 22px; }
+  li { padding: 3px 0; overflow-wrap: anywhere; }
+  li .muted { margin-left: 6px; }
+  .chapters button { width: 100%; text-align: left; margin-top: 6px; min-height: 36px; padding: 6px 10px; }
+  #message { min-height: 1.4em; margin-top: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="live" id="live">Live</span><span>VR Video Streamer remote</span></h1>
+
+  <div class="card">
+    <div class="muted" id="what">Connecting...</div>
+    <div class="now" id="title"></div>
+    <div id="player" class="hidden">
+      <input class="bar" id="bar" type="range" min="0" max="1000" value="0" aria-label="Position">
+      <div class="times muted"><span id="pos">--:--</span><span id="len">--:--</span></div>
+      <div class="buttons">
+        <button id="back" aria-label="Back 10 seconds">-10 s</button>
+        <button id="toggle" class="main">Pause</button>
+        <button id="forward" aria-label="Forward 10 seconds">+10 s</button>
+        <button id="skip" class="grow">Skip to next</button>
+      </div>
+    </div>
+    <div class="muted" id="viewers" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card chapters hidden" id="chapterCard">
+    <div style="font-weight:600">Chapters</div>
+    <div id="chapters"></div>
+  </div>
+
+  <div class="card hidden" id="queueCard">
+    <div style="font-weight:600">Up next</div>
+    <div class="muted" id="empty">Nothing waiting.</div>
+    <ol id="queue"></ol>
+    <form id="add" style="margin-top:12px">
+      <input type="url" id="link" placeholder="Paste a YouTube link" aria-label="YouTube link to add" required>
+      <button type="submit">Add</button>
+    </form>
+    <div class="muted" id="message"></div>
+  </div>
+</main>
+<script>
+"use strict";
+let state = null, dragging = false, failures = 0;
+const $ = id => document.getElementById(id);
+
+function time(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, "0");
+  return h ? h + ":" + String(m).padStart(2, "0") + ":" + x : m + ":" + x;
+}
+
+async function send(command) {
+  try {
+    const r = await fetch("command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) });
+    if (!r.ok) throw new Error(r.status);
+    setTimeout(refresh, 300);
+    return true;
+  } catch (e) { $("message").textContent = "Couldn't reach the streamer just now."; return false; }
+}
+
+function show(s) {
+  state = s;
+  const playing = s.mode === "player";
+  $("live").style.display = s.mode === "stopped" ? "none" : "inline";
+  $("what").textContent = s.mode === "stopped" ? "The stream has stopped." :
+                          s.mode === "capture" ? "Streaming a screen or program, so there's nothing to control here." :
+                          s.loading ? "Getting the next video..." : s.ended ? "Finished" : s.paused ? "Paused" : "Now playing";
+  $("title").textContent = playing ? (s.title || "") : "";
+  $("player").classList.toggle("hidden", !playing);
+  $("queueCard").classList.toggle("hidden", !playing);
+  $("viewers").textContent = s.viewers || "";
+  if (playing) {
+    $("toggle").textContent = s.paused || s.ended ? "Play" : "Pause";
+    const seekable = s.duration > 0;
+    $("bar").disabled = !seekable; $("back").disabled = !seekable; $("forward").disabled = !seekable;
+    $("skip").disabled = !(s.queue && s.queue.length);
+    if (!dragging) {
+      $("bar").value = seekable ? Math.round(s.position / s.duration * 1000) : 0;
+      $("pos").textContent = seekable ? time(s.position) : "Live";
+      $("len").textContent = seekable ? time(s.duration) : "";
+    }
+    const list = $("queue"); list.textContent = "";
+    for (const item of s.queue || []) {
+      const li = document.createElement("li");
+      li.textContent = item.name;
+      if (item.length) { const t = document.createElement("span"); t.className = "muted"; t.textContent = time(item.length); li.appendChild(t); }
+      list.appendChild(li);
+    }
+    if (s.more) { const li = document.createElement("li"); li.className = "muted"; li.textContent = "and " + s.more + " more"; list.appendChild(li); }
+    $("empty").classList.toggle("hidden", !!(s.queue && s.queue.length));
+    $("add").classList.toggle("hidden", !s.canAdd);
+    const chapters = s.chapters || [];
+    $("chapterCard").classList.toggle("hidden", !chapters.length);
+    const box = $("chapters");
+    if (box.dataset.key !== JSON.stringify(chapters)) {
+      box.dataset.key = JSON.stringify(chapters); box.textContent = "";
+      chapters.forEach((c, i) => {
+        const b = document.createElement("button");
+        b.textContent = time(c.start) + "   " + (c.title || "Chapter " + (i + 1));
+        b.onclick = () => send({ action: "seek", at: c.start });
+        box.appendChild(b);
+      });
+    }
+  }
+  if (s.notice && !$("message").dataset.mine) $("message").textContent = s.notice;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("state", { cache: "no-store" });
+    if (r.status === 404) { $("what").textContent = "This remote link has expired. Ask for the new one."; $("player").classList.add("hidden"); $("queueCard").classList.add("hidden"); return false; }
+    show(await r.json());
+    failures = 0;
+  } catch (e) { if (++failures > 2) $("what").textContent = "Can't reach the streamer. Retrying..."; }
+  return true;
+}
+
+$("toggle").onclick = () => send({ action: "toggle" });
+$("back").onclick = () => send({ action: "back" });
+$("forward").onclick = () => send({ action: "forward" });
+$("skip").onclick = () => send({ action: "skip" });
+$("bar").addEventListener("input", () => { dragging = true; if (state && state.duration > 0) $("pos").textContent = time($("bar").value / 1000 * state.duration); });
+$("bar").addEventListener("change", () => { if (state && state.duration > 0) send({ action: "seek", at: $("bar").value / 1000 * state.duration }); dragging = false; });
+$("add").addEventListener("submit", async e => {
+  e.preventDefault();
+  const link = $("link").value.trim();
+  if (!/^https?:\/\/([a-z0-9-]+\.)*(youtube\.com|youtu\.be)\//i.test(link)) { $("message").textContent = "Only YouTube links can be added from here."; return; }
+  $("message").dataset.mine = "1";
+  if (await send({ action: "add", link })) { $("link").value = ""; $("message").textContent = "Sent. It shows in the list once the streamer has read it."; }
+  setTimeout(() => { delete $("message").dataset.mine; }, 6000);
+});
+
+(async function loop() { const going = await refresh(); if (going) setTimeout(loop, 1000); })();
+</script>
+</body>
+</html>

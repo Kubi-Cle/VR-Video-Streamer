@@ -89,6 +89,76 @@ function Save-EmbeddedSubtitle($ffmpeg, $file, $streamIndex, $path) {
     $path
 }
 
+# Subtitles in another language, through Google Translate's free web address (the one its own web page uses: no key
+# or account, but it isn't an official service, so it could stop working). Many lines go in each request, one per
+# line of text; if the answer doesn't come back with the same number of lines, that batch goes a line at a time.
+function Invoke-Translate($lines, $language) {
+    $body = "q=" + [uri]::EscapeDataString(($lines -join "`n"))
+    $answer = Invoke-WebRequest "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$language&dt=t" -Method Post `
+        -ContentType "application/x-www-form-urlencoded; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) -UseBasicParsing -TimeoutSec 30 -UserAgent "Mozilla/5.0"
+    $text = if ($answer.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($answer.Content) } else { $answer.RawContentStream.Position = 0; (New-Object IO.StreamReader($answer.RawContentStream, [Text.Encoding]::UTF8)).ReadToEnd() }
+    $parts = (ConvertFrom-Json $text)[0]
+    (@($parts | ForEach-Object { $_[0] }) -join "") -split "`n"
+}
+
+function Convert-TranslatedSubtitles($source, $language, $path) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $google = @{ zh = "zh-CN" }[$language]
+    if (-not $google) { $google = $language }
+    $cues = New-Object Collections.ArrayList
+    $raw = [IO.File]::ReadAllText($source, [Text.Encoding]::UTF8) -replace "`r", ""
+    foreach ($block in ($raw -split "`n\s*`n")) {
+        $rows = @($block -split "`n" | Where-Object { $_ -ne "" })
+        $at = -1
+        for ($i = 0; $i -lt $rows.Count; $i++) { if ($rows[$i] -match '-->') { $at = $i; break } }
+        if ($at -lt 0) { continue }
+        # Formatting marks would get translated or mangled, so the text goes as plain words on one line
+        $words = (($rows | Select-Object -Skip ($at + 1)) -join " ") -replace '<[^>]+>', '' -replace '\{[^}]*\}', '' -replace '\s+', ' '
+        [void]$cues.Add(@{ Time = $rows[$at].Trim(); Text = $words.Trim() })
+    }
+    if (-not $cues.Count) { throw "Those subtitles have no lines to translate." }
+    $batch = New-Object Collections.ArrayList
+    $size = 0
+    $flush = {
+        if (-not $batch.Count) { return }
+        $texts = @($batch | ForEach-Object { if ($_.Text) { $_.Text } else { "." } })
+        $done = $null
+        try { $done = @(Invoke-Translate $texts $google) } catch { }
+        if (-not $done -or $done.Count -ne $texts.Count) {
+            $done = @(foreach ($t in $texts) { Start-Sleep -Milliseconds 150; ((Invoke-Translate @($t) $google) -join " ") })
+        }
+        for ($i = 0; $i -lt $batch.Count; $i++) { if ($batch[$i].Text) { $batch[$i].Text = "$($done[$i])".Trim() } }
+        $batch.Clear()
+        Start-Sleep -Milliseconds 300   # gentle on a free service
+    }
+    foreach ($cue in $cues) {
+        if ($size + $cue.Text.Length -gt 3000) { & $flush; $size = 0 }
+        [void]$batch.Add($cue)
+        $size += $cue.Text.Length + 1
+    }
+    & $flush
+    # The stream draws each line as it is, without wrapping, so a long one is split in two near its middle
+    $wrap = {
+        param($t)
+        $wide = $t -match "[$([char]0x3000)-$([char]0x9FFF)$([char]0xAC00)-$([char]0xD7AF)]"   # Chinese, Japanese, Korean: about twice as wide, and few spaces
+        $limit = if ($wide) { 22 } else { 42 }
+        if ($t.Length -le $limit) { return $t }
+        $middle = [int]($t.Length / 2)
+        $space = -1
+        for ($d = 0; $d -lt $middle; $d++) {
+            if ($t[$middle + $d] -eq ' ') { $space = $middle + $d; break }
+            if ($t[$middle - $d] -eq ' ') { $space = $middle - $d; break }
+        }
+        if ($space -gt 0) { $t.Substring(0, $space) + "`n" + $t.Substring($space + 1) }
+        elseif ($wide) { $t.Substring(0, $middle) + "`n" + $t.Substring($middle) }
+        else { $t }
+    }
+    $srt = New-Object Text.StringBuilder
+    for ($i = 0; $i -lt $cues.Count; $i++) { [void]$srt.Append("$($i + 1)`n$($cues[$i].Time)`n$(& $wrap $cues[$i].Text)`n`n") }
+    [IO.File]::WriteAllText($path, $srt.ToString(), (New-Object Text.UTF8Encoding($false)))
+    $path
+}
+
 # Keys and tokens: stored per PC, encrypted for this Windows user, and outside this folder
 function Get-Secret($name) {
     $file = Join-Path $script:AppData $name
@@ -211,7 +281,12 @@ function Get-SubtitleSearchText($name) {
 
 function Get-Settings {
     $settings = @{ SubsAuto = $true; SubsLanguage = "en"; SubsSize = 20; SubsPlace = "bottom"; SubsColor = "white"; SubsFont = "auto"
-                   Volume = 100; EvenOut = $false; Card = $true; PermanentHost = ""; Preview = $true; AudioBitrate = "128k" }
+                   Volume = 100; EvenOut = $false; Card = $true; PermanentHost = ""; Preview = $true; AudioBitrate = "128k"
+                   # The window's choices, so it opens the way it was left. Lists are lines of text, since an empty
+                   # list read back from JSON can't be told apart from none saved. $null = never chosen.
+                   Source = ""; Monitor = ""; WindowProgram = ""; Quality = ""; Encoder = ""; Tunnel = ""; Public = $true
+                   Loop = $false; Repeat = $false; SoundPicks = $null; SoundQuiet = ""; SoundVolumes = ""; SoundDelay = 0
+                   UpdateCheck = $true }
     try {
         $saved = Get-Content -LiteralPath (Join-Path $script:AppData "settings.json") -Raw -ErrorAction Stop | ConvertFrom-Json
         foreach ($name in @($settings.Keys)) { if ($null -ne $saved.$name) { $settings[$name] = $saved.$name } }

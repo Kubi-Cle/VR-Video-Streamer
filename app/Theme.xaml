@@ -125,6 +125,32 @@
         </Setter>
     </Style>
 
+    <!-- A checkbox drawn as an on/off switch, with its label on the left -->
+    <Style x:Key="ToggleSwitch" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                        <Border x:Name="Track" Width="32" Height="18" CornerRadius="9" BorderThickness="1" BorderBrush="#5F7570" Background="Transparent" VerticalAlignment="Center">
+                            <Ellipse x:Name="Knob" Width="12" Height="12" Margin="2,0" Fill="{StaticResource Muted}" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background" Value="{StaticResource Accent}"/>
+                            <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                            <Setter TargetName="Knob" Property="Fill" Value="{StaticResource OnAccent}"/>
+                            <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource OnSelected}"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style TargetType="TextBox">
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="Background" Value="{StaticResource Page}"/>

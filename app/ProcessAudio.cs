@@ -1,6 +1,6 @@
 // Captures the sound of one program (and its child processes, e.g. a browser's audio process) with
-// Windows' process loopback capture (Windows 10 2004+), and writes it as 48 kHz stereo s16le to a
-// named pipe that ffmpeg reads. It doesn't matter which output device the program plays to.
+// Windows' process loopback capture (Windows 10 2004+), and writes it as 48 kHz stereo floats to a
+// named pipe that SoundMixer reads. Floats keep a program turned right down clean (see SessionQuiet.cs). It doesn't matter which output device the program plays to.
 // While the program is silent Windows sends nothing, so silence is filled in to keep the stream's
 // sound timeline running in step with the picture.
 using System;
@@ -71,7 +71,7 @@ public class ProcessAudioCapture
         [MarshalAs(UnmanagedType.LPStruct)] Guid riid, IntPtr activationParams,
         IPalActivateCompletionHandler completionHandler, out IPalActivateOperation operation);
 
-    const int Rate = 48000, BytesPerFrame = 4;   // 48 kHz, stereo, 16-bit
+    const int Rate = 48000, BytesPerFrame = 8;   // 48 kHz, stereo, 32-bit float
     readonly int pid;
     readonly string pipeName;
     NamedPipeServerStream pipe;
@@ -122,14 +122,14 @@ public class ProcessAudioCapture
         try
         {
             client = Activate();
-            // WAVEFORMATEX: PCM, 2 ch, 48000 Hz, 16-bit
+            // WAVEFORMATEX: float, 2 ch, 48000 Hz, 32-bit
             IntPtr fmt = Marshal.AllocHGlobal(18);
-            Marshal.WriteInt16(fmt, 0, 1);
+            Marshal.WriteInt16(fmt, 0, 3);
             Marshal.WriteInt16(fmt, 2, 2);
             Marshal.WriteInt32(fmt, 4, Rate);
             Marshal.WriteInt32(fmt, 8, Rate * BytesPerFrame);
             Marshal.WriteInt16(fmt, 12, BytesPerFrame);
-            Marshal.WriteInt16(fmt, 14, 16);
+            Marshal.WriteInt16(fmt, 14, 32);
             Marshal.WriteInt16(fmt, 16, 0);
             const int LOOPBACK = 0x00020000, SRC_DEFAULT_QUALITY = 0x08000000;
             const int AUTOCONVERTPCM = unchecked((int)0x80000000);

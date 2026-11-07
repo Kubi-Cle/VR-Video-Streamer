@@ -56,10 +56,10 @@ Add-Type -Path (Join-Path $PSScriptRoot "KillOnClose.cs")
 [void][KillOnClose]::Enable()
 
 # Video files play through PipePlayer (pause/seek); see PipePlayer.cs. Subtitles follow its position.
-Add-Type -Path (Join-Path $PSScriptRoot "PipePlayer.cs"), (Join-Path $PSScriptRoot "SubtitleOverlay.cs"), (Join-Path $PSScriptRoot "SegmentProxy.cs") -ReferencedAssemblies System.Core
+Add-Type -Path (Join-Path $PSScriptRoot "PipePlayer.cs"), (Join-Path $PSScriptRoot "SubtitleOverlay.cs"), (Join-Path $PSScriptRoot "SegmentProxy.cs"), (Join-Path $PSScriptRoot "SessionQuiet.cs"), (Join-Path $PSScriptRoot "RemoteProxy.cs") -ReferencedAssemblies System.Core
 
 # The shared look applies to every window through this one application object
-Add-Type -Path (Join-Path $PSScriptRoot "PreviewFeed.cs"), (Join-Path $PSScriptRoot "IntermissionCard.cs") -ReferencedAssemblies PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+Add-Type -Path (Join-Path $PSScriptRoot "PreviewFeed.cs"), (Join-Path $PSScriptRoot "IntermissionCard.cs"), (Join-Path $PSScriptRoot "QrCode.cs") -ReferencedAssemblies PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 $app = New-Object System.Windows.Application
 $app.ShutdownMode = "OnExplicitShutdown"
 $app.Resources = [System.Windows.Markup.XamlReader]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot "Theme.xaml") -Raw -Encoding UTF8))
@@ -115,6 +115,7 @@ foreach ($line in $monitorLines) {
     }
 }
 if ($cbMonitor.SelectedIndex -lt 0 -and $cbMonitor.Items.Count) { $cbMonitor.SelectedIndex = 0 }
+if ("$($script:settings.Monitor)" -match '^\d+$' -and [int]$script:settings.Monitor -lt $cbMonitor.Items.Count) { $cbMonitor.SelectedIndex = [int]$script:settings.Monitor }
 
 $script:windowProcs = @()
 function Get-Programs {
@@ -126,6 +127,9 @@ function Update-WindowList {
     $procs = Get-Programs
     $script:windowProcs = $procs
     foreach ($p in $procs) { [void]$cbWindow.Items.Add("$($p.ProcessName)  -  $($p.MainWindowTitle)") }
+    # The program streamed last time, if it's open
+    $want = if ($script:pickedProgram) { $script:pickedProgram } else { $script:settings.WindowProgram }
+    for ($i = 0; $i -lt $procs.Count; $i++) { if ($want -and $procs[$i].ProcessName -eq $want) { $cbWindow.SelectedIndex = $i; break } }
 }
 Update-WindowList
 
@@ -134,32 +138,57 @@ $tunnels = @(@{ Name = "Automatic"; Value = "auto" }, @{ Name = "Cloudflare"; Va
              @{ Name = "localhost.run"; Value = "localhost.run" }, @{ Name = "Pinggy (shows your IP)"; Value = "pinggy" },
              @{ Name = "My permanent link"; Value = "permanent" })
 foreach ($t in $tunnels) { [void]$cbTunnel.Items.Add($t.Name) }
-$cbTunnel.SelectedIndex = 0
+$cbTunnel.SelectedIndex = [Math]::Max(0, [array]::IndexOf(@($tunnels | ForEach-Object { $_.Value }), "$($script:settings.Tunnel)"))
+$chkPublic.IsChecked = [bool]$script:settings.Public
+$cbTunnel.IsEnabled = [bool]$chkPublic.IsChecked
 $qualities = @(
     @{ Name = "1080p  (4 Mbps)"; Height = 1080; Bitrate = "4M"; Mbps = 4.0 },
     @{ Name = "720p  (2.5 Mbps)"; Height = 720; Bitrate = "2500k"; Mbps = 2.5 },
     @{ Name = "720p light  (1.5 Mbps)"; Height = 720; Bitrate = "1500k"; Mbps = 1.5 }
 )
 foreach ($q in $qualities) { [void]$cbQuality.Items.Add($q.Name) }
-$cbQuality.SelectedIndex = 0
-$encoders = @(@{ Name = "CPU"; Value = "cpu" }, @{ Name = "NVIDIA GPU"; Value = "nvenc" },
-              @{ Name = "AMD GPU"; Value = "amf" }, @{ Name = "Intel GPU"; Value = "qsv" })
+$cbQuality.SelectedIndex = [Math]::Max(0, [array]::IndexOf(@($qualities | ForEach-Object { $_.Name }), "$($script:settings.Quality)"))
+$encoders = @(@{ Name = "CPU"; Value = "cpu"; Codec = "libx264" }, @{ Name = "NVIDIA GPU"; Value = "nvenc"; Codec = "h264_nvenc" },
+              @{ Name = "AMD GPU"; Value = "amf"; Codec = "h264_amf" }, @{ Name = "Intel GPU"; Value = "qsv"; Codec = "h264_qsv" })
 foreach ($e in $encoders) { [void]$cbEncoder.Items.Add($e.Name) }
-$cbEncoder.SelectedIndex = if ($hasNvidia -and (Test-Encoder "h264_nvenc")) { 1 }
+# The one picked last time, if it still works (a new driver or graphics card can change that); otherwise the best one here
+$savedEncoder = [array]::IndexOf(@($encoders | ForEach-Object { $_.Value }), "$($script:settings.Encoder)")
+$cbEncoder.SelectedIndex = if ($savedEncoder -eq 0 -or ($savedEncoder -gt 0 -and (Test-Encoder $encoders[$savedEncoder].Codec))) { $savedEncoder }
+                           elseif ($hasNvidia -and (Test-Encoder "h264_nvenc")) { 1 }
                            elseif ($hasAmd -and (Test-Encoder "h264_amf")) { 2 }
                            elseif ($hasIntel -and (Test-Encoder "h264_qsv")) { 3 }
                            else { 0 }
 
-$linkBoxes = @{ public = $tbPublic; lan = $tbLan; local = $tbLocal; rtsp = $tbRtsp }
-foreach ($pair in @(@($btnCopyPublic, $tbPublic), @($btnCopyLan, $tbLan), @($btnCopyLocal, $tbLocal), @($btnCopyRtsp, $tbRtsp))) {
+$linkBoxes = @{ public = $tbPublic; lan = $tbLan; local = $tbLocal; rtsp = $tbRtsp; short = $tbShort; remote = $tbRemote }
+foreach ($pair in @(@($btnCopyPublic, $tbPublic), @($btnCopyLan, $tbLan), @($btnCopyLocal, $tbLocal), @($btnCopyRtsp, $tbRtsp), @($btnCopyRemote, $tbRemote))) {
     $pair[0].Tag = $pair[1]
-    $pair[0].Add_Click({ param($s) if ($s.Tag.Text) {
+    $pair[0].Add_Click({ param($s) if ($s.Tag.Text -match '^\w+://') {
                 $lblStatus.Text = if (Copy-ToClipboard $s.Tag.Text) { "Copied: $($s.Tag.Text)" } else { "Couldn't copy, the clipboard is busy. Try again." }
             } })
 }
+foreach ($pair in @(@($btnQrPublic, $tbPublic, "Public link"), @($btnQrShort, $tbShort, "Short link"), @($btnQrRemote, $tbRemote, "Remote control"), @($btnQrLan, $tbLan, "Headset on your Wi-Fi"))) {
+    $pair[0].Tag = @{ Box = $pair[1]; Title = $pair[2] }
+    $pair[0].Add_Click({ param($s)
+            if ($s.Tag.Box.Text -match '^\w+://') { Show-QrCode $window $s.Tag.Title $s.Tag.Box.Text }
+            else { $lblStatus.Text = "That link isn't ready yet. Start streaming first." }
+        })
+}
+
+# The short link is the same stream at a shorter address, served by the remote control's proxy (RemoteProxy.cs)
+function Reset-ShortLink { $tbShort.Text = "" }
+$btnShort.Add_Click({
+        if ($tbShort.Text -match '^https://') {
+            $lblStatus.Text = if (Copy-ToClipboard $tbShort.Text) { "Copied: $($tbShort.Text)" } else { "Couldn't copy, the clipboard is busy. Try again." }
+        } else { $lblStatus.Text = "The short link appears once the public link is ready." }
+    })
 
 # --- Behaviour ---
 function Show-If($control, $visible) { $control.Visibility = if ($visible) { "Visible" } else { "Collapsed" } }
+
+# Programs silenced on this PC come back whenever no stream is running (SessionQuiet.cs)
+function Restore-QuietPrograms {
+    if ($script:quietFile) { try { [SessionQuiet]::RestoreFromFile($script:quietFile) } catch { } }
+}
 
 function Update-Enabled {
     $running = [bool]$script:proc
@@ -179,43 +208,172 @@ function Update-Enabled {
     # The queue is for file streams: fill it before starting one, or at any time during one
     Show-If $pnlQueue $isFile
     Show-If $pnlSound (-not $isFile)
+    if (-not $running) { Restore-QuietPrograms }
     $pnlQueue.IsEnabled = if ($running) { [bool]$script:player } else { $isFile }
-    $pnlSound.IsEnabled = -not $running
 }
 
 # Sound choices: the program in the picture, sound devices and any other programs, in any combination.
 # $script:soundPicked is what the user last ticked; until they tick something, each source has its own default.
 $script:soundPicked = $null
+$script:soundQuiet = $null   # sources to silence on this PC, by the same keys
 $script:soundRebuilding = $false
+# Saved choices name programs rather than their process numbers, which change every time a program starts
+function Read-Lines($text) { @("$text" -split "`n" | Where-Object { $_ }) }
+$script:soundVolumes = @{}
+foreach ($line in Read-Lines $script:settings.SoundVolumes) { if ($line -match '^(.+)=(\d+)$') { $script:soundVolumes[$Matches[1]] = [int]$Matches[2] } }
+function Request-SaveSettings { $script:settingsDirty = $true }
 function Update-SoundList {
     $choices = @()
-    if ($rbWindow.IsChecked) { $choices += @{ Key = "own"; Kind = "own"; Label = "The program being streamed" } }
-    foreach ($d in $audioDevices) { $choices += @{ Key = "dev:$d"; Kind = "device"; Name = $d; Label = "Device: $d" } }
-    foreach ($p in Get-Programs) { $choices += @{ Key = "app:$($p.Id)"; Kind = "app"; Id = $p.Id; Label = "Program: $($p.ProcessName)  -  $($p.MainWindowTitle)" } }
-    $picked = if ($null -ne $script:soundPicked) { $script:soundPicked } elseif ($rbWindow.IsChecked) { @("own") } else { @() }
+    if ($rbWindow.IsChecked) { $choices += @{ Key = "own"; Stable = "own"; Kind = "own"; Label = "The program being streamed" } }
+    foreach ($d in $audioDevices) { $choices += @{ Key = "dev:$d"; Stable = "dev:$d"; Kind = "device"; Name = $d; Label = "Device: $d" } }
+    foreach ($p in Get-Programs) { $choices += @{ Key = "app:$($p.Id)"; Stable = "prog:$($p.ProcessName)"; Kind = "app"; Id = $p.Id; Label = "Program: $($p.ProcessName)  -  $($p.MainWindowTitle)" } }
+    $savedPicks = if ($null -ne $script:settings.SoundPicks) { Read-Lines $script:settings.SoundPicks }
+    $picked = if ($null -ne $script:soundPicked) { $script:soundPicked }
+              elseif ($null -ne $script:settings.SoundPicks) { @($choices | Where-Object { $savedPicks -contains $_.Stable } | ForEach-Object { $_.Key }) }
+              elseif ($rbWindow.IsChecked) { @("own") } else { @() }
+    $quietKeys = if ($null -ne $script:soundQuiet) { $script:soundQuiet } else { $saved = Read-Lines $script:settings.SoundQuiet; @($choices | Where-Object { $saved -contains $_.Stable } | ForEach-Object { $_.Key }) }
     $script:soundRebuilding = $true
     $lbSound.Items.Clear()
     foreach ($choice in $choices) {
+        $row = New-Object System.Windows.Controls.DockPanel
+        $mute = $null
+        # A device isn't playing on this PC's speakers to begin with, so only programs get a switch
+        if ($choice.Kind -ne "device") {
+            $mute = New-Object System.Windows.Controls.CheckBox
+            $mute.Style = $window.FindResource("ToggleSwitch")
+            $mute.Margin = "8,0,2,0"
+            $mute.ToolTip = "Silences this program on your PC while you stream, so you only hear it from the VR world. Viewers still hear it at its normal volume."
+            [System.Windows.Automation.AutomationProperties]::SetName($mute, "Mute on PC: $($choice.Label)")
+            $mute.IsChecked = $quietKeys -contains $choice.Key
+            $mute.Add_Checked({ Save-SoundPicks })
+            $mute.Add_Unchecked({ Save-SoundPicks })
+            [System.Windows.Controls.DockPanel]::SetDock($mute, "Right")
+            [void]$row.Children.Add($mute)
+        }
         $box = New-Object System.Windows.Controls.CheckBox
         $text = New-Object System.Windows.Controls.TextBlock
         $text.Text = $choice.Label; $text.TextTrimming = "CharacterEllipsis"; $text.ToolTip = $choice.Label
         $box.Content = $text
-        $box.Tag = $choice
         $box.IsChecked = $picked -contains $choice.Key
         $box.Add_Checked({ Save-SoundPicks })
         $box.Add_Unchecked({ Save-SoundPicks })
-        [void]$lbSound.Items.Add($box)
+        # How loud viewers hear this one, under it while it's ticked
+        $volume = New-Object System.Windows.Controls.DockPanel
+        $volume.Margin = "26,1,0,3"
+        $volumeText = New-Object System.Windows.Controls.TextBlock
+        $volumeText.Style = $window.FindResource("MutedText")
+        $volumeText.MinWidth = 40; $volumeText.TextAlignment = "Right"
+        [System.Windows.Controls.DockPanel]::SetDock($volumeText, "Right")
+        $slider = New-Object System.Windows.Controls.Slider
+        $slider.Minimum = 0; $slider.Maximum = 200; $slider.SmallChange = 5; $slider.LargeChange = 10
+        $slider.IsMoveToPointEnabled = $true
+        $slider.ToolTip = "How loud viewers hear this. It doesn't change what you hear on your PC."
+        [System.Windows.Automation.AutomationProperties]::SetName($slider, "Volume for viewers: $($choice.Label)")
+        $percent = if ($script:soundVolumes.ContainsKey($choice.Stable)) { $script:soundVolumes[$choice.Stable] } else { 100 }
+        $slider.Value = $percent
+        $volumeText.Text = "$percent%"
+        $slider.Tag = @{ Text = $volumeText; Stable = $choice.Stable }
+        $slider.Add_ValueChanged({ param($s)
+                $p = [int][Math]::Round($s.Value / 5) * 5
+                $s.Tag.Text.Text = "$p%"
+                $script:soundVolumes[$s.Tag.Stable] = $p
+                $script:soundDirty = $true
+                Request-SaveSettings
+            })
+        [void]$volume.Children.Add($volumeText)
+        [void]$volume.Children.Add($slider)
+        Show-If $volume $box.IsChecked
+        $stack = New-Object System.Windows.Controls.StackPanel
+        [void]$stack.Children.Add($box)
+        [void]$stack.Children.Add($volume)
+        [void]$row.Children.Add($stack)
+        $row.Tag = @{ Choice = $choice; Box = $box; Mute = $mute; Volume = $volume }
+        [void]$lbSound.Items.Add($row)
     }
     $script:soundRebuilding = $false
 }
 function Save-SoundPicks {
     if ($script:soundRebuilding) { return }
-    $script:soundPicked = @($lbSound.Items | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag.Key })
+    foreach ($row in $lbSound.Items) { Show-If $row.Tag.Volume $row.Tag.Box.IsChecked }
+    $script:soundPicked = @($lbSound.Items | Where-Object { $_.Tag.Box.IsChecked } | ForEach-Object { $_.Tag.Choice.Key })
+    $script:soundQuiet = @($lbSound.Items | Where-Object { $_.Tag.Mute -and $_.Tag.Mute.IsChecked } | ForEach-Object { $_.Tag.Choice.Key })
+    # Ones not in the list just now (a closed program, or "the program being streamed" while on Monitor) stay as they were
+    $shown = @($lbSound.Items | ForEach-Object { $_.Tag.Choice.Stable })
+    $keepPicks = @(Read-Lines $script:settings.SoundPicks | Where-Object { $shown -notcontains $_ })
+    if ($null -eq $script:settings.SoundPicks -and -not $rbWindow.IsChecked) { $keepPicks = @("own") }
+    $keepQuiet = @(Read-Lines $script:settings.SoundQuiet | Where-Object { $shown -notcontains $_ })
+    $script:settings.SoundPicks = (@($keepPicks) + @($lbSound.Items | Where-Object { $_.Tag.Box.IsChecked } | ForEach-Object { $_.Tag.Choice.Stable })) -join "`n"
+    $script:settings.SoundQuiet = (@($keepQuiet) + @($lbSound.Items | Where-Object { $_.Tag.Mute -and $_.Tag.Mute.IsChecked } | ForEach-Object { $_.Tag.Choice.Stable })) -join "`n"
+    Request-SaveSettings
+    if ($script:soundFile) { Send-SoundPicks }
+}
+# Tells the running stream which sources to use (SoundMixer.cs re-reads this file). It's replaced in one step,
+# so the stream never reads half of it.
+function Send-SoundPicks {
+    $keys = @(); $pids = @()
+    foreach ($row in $lbSound.Items) {
+        if (-not $row.Tag.Box.IsChecked) { continue }
+        $choice = $row.Tag.Choice
+        $quiet = if ($row.Tag.Mute -and $row.Tag.Mute.IsChecked) { "`tquiet" } else { "" }
+        $percent = if ($script:soundVolumes.ContainsKey($choice.Stable)) { $script:soundVolumes[$choice.Stable] } else { 100 }
+        if ($percent -ne 100) { $quiet += "`tvol=" + ($percent / 100).ToString([Globalization.CultureInfo]::InvariantCulture) }
+        switch ($choice.Kind) {
+            "own" { $keys += "app:$($script:soundOwnPid)$quiet"; $pids += $script:soundOwnPid }
+            "app" { $keys += "app:$($choice.Id)$quiet"; $pids += $choice.Id }
+            "device" { $keys += "dev:$($choice.Name)$quiet" }
+        }
+    }
+    if ([int]$script:settings.SoundDelay -gt 0) { $keys += "delay=$([int]$script:settings.SoundDelay)" }
+    $script:soundDirty = $false
+    $script:soundPids = @($pids | Select-Object -Unique)
+    $part = "$($script:soundFile).part"
+    [IO.File]::WriteAllLines($part, [string[]]@($keys | Select-Object -Unique))
+    foreach ($try in 1..5) {
+        try { Move-Item -LiteralPath $part -Destination $script:soundFile -Force -ErrorAction Stop; return }
+        catch { Start-Sleep -Milliseconds 30 }
+    }
+    $lblStatus.Text = "Couldn't change the sound just now. Tick it again."
 }
 $btnRefreshSound.Add_Click({ Update-SoundList })
 foreach ($c in $rbMonitor, $rbWindow, $rbFile) { $c.Add_Checked({ if ($script:windowReady) { Update-Enabled; Update-SoundList } }) }
 $btnRefresh.Add_Click({ Update-WindowList })
 $chkPublic.Add_Click({ $cbTunnel.IsEnabled = [bool]$chkPublic.IsChecked })
+
+# What's picked in the window is remembered for next time (settings.json, written shortly after each change)
+function Save-Choices {
+    if (-not $script:windowReady) { return }
+    $s = $script:settings
+    $s.Source = if ($rbWindow.IsChecked) { "window" } elseif ($rbFile.IsChecked) { "file" } else { "monitor" }
+    $s.Monitor = "$($cbMonitor.SelectedIndex)"
+    if ($cbWindow.SelectedIndex -ge 0 -and $cbWindow.SelectedIndex -lt @($script:windowProcs).Count) {
+        $script:pickedProgram = $script:windowProcs[$cbWindow.SelectedIndex].ProcessName
+        $s.WindowProgram = $script:pickedProgram
+    }
+    $s.Quality = $qualities[[Math]::Max(0, $cbQuality.SelectedIndex)].Name
+    $s.Encoder = $encoders[[Math]::Max(0, $cbEncoder.SelectedIndex)].Value
+    $s.Tunnel = $tunnels[[Math]::Max(0, $cbTunnel.SelectedIndex)].Value
+    $s.Public = [bool]$chkPublic.IsChecked
+    $s.Loop = [bool]$chkLoop.IsChecked
+    $s.Repeat = [bool]$chkRepeat.IsChecked
+    Request-SaveSettings
+}
+foreach ($c in $cbMonitor, $cbWindow, $cbQuality, $cbEncoder, $cbTunnel) { $c.Add_SelectionChanged({ Save-Choices }) }
+foreach ($c in $chkPublic, $chkLoop, $chkRepeat) { $c.Add_Click({ Save-Choices }) }
+foreach ($c in $rbMonitor, $rbWindow, $rbFile) { $c.Add_Checked({ Save-Choices }) }
+$chkLoop.IsChecked = [bool]$script:settings.Loop
+$chkRepeat.IsChecked = [bool]$script:settings.Repeat
+switch ($script:settings.Source) { "window" { $rbWindow.IsChecked = $true } "file" { $rbFile.IsChecked = $true } }
+
+# Holds all the captured sound back, for when viewers hear things before they see them
+function Update-SoundDelayLabel { $lblSoundDelay.Text = "$([int]$script:settings.SoundDelay) ms" }
+$sliderSoundDelay.Value = [Math]::Max(0, [Math]::Min(1000, [int]$script:settings.SoundDelay))
+Update-SoundDelayLabel
+$sliderSoundDelay.Add_ValueChanged({
+        $script:settings.SoundDelay = [int]([Math]::Round($sliderSoundDelay.Value / 10) * 10)
+        Update-SoundDelayLabel
+        $script:soundDirty = $true
+        Request-SaveSettings
+    })
 
 function Set-File($path) {
     # Subtitles chosen for one video don't belong on another
@@ -280,7 +438,7 @@ function Quote($s) { '"' + ($s -replace '"', '\"') + '"' }
 # What's in the file, or nothing (with a message) if ffmpeg can't play it
 function Get-MediaInfo($path) {
     $ErrorActionPreference = "Continue"
-    $info = & $ffprobeExe -v error -show_entries "stream=index,codec_type,codec_name:stream_disposition=attached_pic:stream_tags=language,title:format=duration" `
+    $info = & $ffprobeExe -v error -show_chapters -show_entries "stream=index,codec_type,codec_name:stream_disposition=attached_pic:stream_tags=language,title:format=duration" `
         -of json $path | ConvertFrom-Json
     $hasVideo = [bool]($info.streams | Where-Object { $_.codec_type -eq "video" -and $_.disposition.attached_pic -ne 1 })
     $hasAudio = [bool]($info.streams | Where-Object { $_.codec_type -eq "audio" })
@@ -288,12 +446,19 @@ function Get-MediaInfo($path) {
     $duration = 0.0
     [void][double]::TryParse([string]$info.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
     # Subtitle tracks that are text. The others (from discs) are pictures, which can't become an .srt.
+    $subtitleNumber = 0
     $tracks = @($info.streams | Where-Object { $_.codec_type -eq "subtitle" } | ForEach-Object {
-            @{ Index = $_.index; Language = "$($_.tags.language)"; Title = "$($_.tags.title)"
+            @{ Index = $_.index; SubIndex = ($subtitleNumber++); Language = "$($_.tags.language)"; Title = "$($_.tags.title)"
+               IsAss = $_.codec_name -in "ass", "ssa"
                IsText = $_.codec_name -in "subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text" }
         })
     $sounds = @($info.streams | Where-Object { $_.codec_type -eq "audio" } | ForEach-Object { @{ Language = "$($_.tags.language)"; Title = "$($_.tags.title)" } })
-    @{ Duration = $duration; HasVideo = $hasVideo; HasAudio = $hasAudio; Tracks = $tracks; Sounds = $sounds }
+    $chapters = @($info.chapters | Where-Object { $_ } | ForEach-Object {
+            $start = 0.0
+            [void][double]::TryParse([string]$_.start_time, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$start)
+            @{ Start = $start; Title = "$($_.tags.title)" }
+        })
+    @{ Duration = $duration; HasVideo = $hasVideo; HasAudio = $hasAudio; Tracks = $tracks; Sounds = $sounds; Chapters = $chapters }
 }
 
 # Probe the file and start a PipePlayer for it; the stream script then reads from the player's pipes.
@@ -309,6 +474,7 @@ function New-FilePlayer($path, $height, $stream, $media) {
     $p.Loop = [bool]$chkLoop.IsChecked
     $p.VolumePercent = [int]$sliderVolume.Value
     $p.EvenOutVolume = [bool]$chkEvenOut.IsChecked
+    if ($script:assSubs) { $p.SubsFile = $script:assSubs.File; $p.SubsTrack = $script:assSubs.Track; $p.SubsDelay = $script:overlay.Offset }
     $script:cardKey = ""
     $p.Start()
     @{ Player = $p; Tag = $tag; Size = "${w}x$height" }
@@ -334,7 +500,7 @@ function Start-Media($path, $media, $subs) {
     $tbFile.Text = $path
     $name = [IO.Path]::GetFileName($path)
     Show-NowPlaying $name
-    Start-VideoSubs @{ Path = $path; Name = $name; Tracks = $media.Tracks; Sounds = $media.Sounds } $subs
+    Start-VideoSubs @{ Path = $path; Name = $name; Tracks = $media.Tracks; Sounds = $media.Sounds; Chapters = $media.Chapters } $subs
 }
 
 # --- Background work, so finding subtitles never freezes the window. Its results arrive on the timer below. ---
@@ -388,9 +554,50 @@ function Update-SubsLabel {
     $lblSubsOffset.Text = if ($script:subsName -and $off) { "{0:+0.0;-0.0} s" -f $off } else { "" }
 }
 
+# Styled subtitles (.ass) keep their fonts, colours and positions by being drawn as the video is decoded. That needs a
+# video being played, so a monitor or program stream shows the same lines as plain text instead.
+$script:assSubs = $null
+function Test-Libass {
+    if ($null -eq $script:hasLibass) {
+        $ErrorActionPreference = "Continue"
+        $script:hasLibass = [bool](& $ffmpegExe -hide_banner -filters 2>$null | Where-Object { $_ -match '\ssubtitles\s' })
+    }
+    $script:hasLibass
+}
+function Update-PlayerAss {
+    if (-not $script:player) { return }
+    $file = if ($script:assSubs) { $script:assSubs.File }
+    $track = if ($script:assSubs) { $script:assSubs.Track } else { -1 }
+    if ($script:player.SubsFile -eq $file -and $script:player.SubsTrack -eq $track -and $script:player.SubsDelay -eq $script:overlay.Offset) { return }
+    $script:player.SubsFile = $file
+    $script:player.SubsTrack = $track
+    $script:player.SubsDelay = $script:overlay.Offset
+    $script:player.Restart()
+}
+function Set-AssSubs($file, $track, $name, $streamIndex = 0) {
+    $script:subsWaiting = $false
+    $script:overlay.Clear()
+    $script:assSubs = @{ File = $file; Track = $track }
+    $script:subsSource = @{ File = $file; Index = $streamIndex }   # for translating them
+    $script:subsName = $name
+    Update-PlayerAss
+    Update-SubsLabel
+}
+
 function Set-Subs($path, $name, [switch]$Quiet) {
     $script:subsWaiting = $false
-    try { $script:overlay.Load($path); $script:subsName = $name }
+    if ($path -match '\.(ass|ssa)$') {
+        if (($script:player -or $rbFile.IsChecked) -and (Test-Libass)) { Set-AssSubs (Get-Item -LiteralPath $path).FullName -1 $name; return }
+        try {
+            $f = Get-Item -LiteralPath $path
+            $plain = Get-SubtitleCachePath "ass" (($f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks) -join "|")
+            if (-not (Test-Path -LiteralPath $plain)) { [void](Save-EmbeddedSubtitle $ffmpegExe $f.FullName 0 $plain) }
+            $path = $plain
+            $script:subsNotice = "These subtitles show as plain text here. Their fonts and positions need a video file playing."
+        } catch { $script:subsNotice = "Can't use those subtitles: $($_.Exception.Message)"; Update-SubsLabel; return }
+    }
+    if ($script:assSubs) { $script:assSubs = $null; Update-PlayerAss }
+    try { $script:overlay.Load($path); $script:subsName = $name; $script:subsSource = @{ Srt = $path } }
     catch {
         $why = "Can't use those subtitles: $($_.Exception.InnerException.Message)"
         if ($Quiet) { $script:subsNotice = $why } else { Update-SubsLabel; Show-Notice $why }
@@ -405,6 +612,8 @@ function Clear-Subs {
     $script:subsWaiting = $false
     $script:overlay.Clear()
     $script:subsName = ""
+    $script:subsSource = $null
+    if ($script:assSubs) { $script:assSubs = $null; Update-PlayerAss }
     Update-SubsLabel
 }
 
@@ -484,6 +693,7 @@ function Start-AiSubs($video, $translate) {
     $script:overlay.RestartClock()
     $script:subsWaiting = $false
     $script:subsName = $name
+    $script:subsSource = $null   # nothing to translate until the AI has finished
     $script:aiJob = @{ Proc = $proc; Part = (Join-Path (Get-SubtitleCacheFolder) $partName); Final = $final; Log = $log; Name = $name; Size = -1 }
     Update-SubsLabel
 }
@@ -502,6 +712,7 @@ function Update-AiSubs {
         if ($finished) {
             Move-Item -LiteralPath $job.Part -Destination $job.Final -Force
             $script:overlay.Update($job.Final)
+            $script:subsSource = @{ Srt = $job.Final }
         } elseif ($size -eq 0 -and $job.Proc.ExitCode -eq 0) {
             $script:subsName = ""
             $script:subsNotice = "AI subtitles found no speech in this video."
@@ -526,9 +737,9 @@ function Get-SubChoices($video) {
     $code = $script:settings.SubsLanguage
     $choices = New-Object Collections.ArrayList
     if ($video.Path -and -not (Test-OnlineLink $video.Path) -and (Test-Path -LiteralPath $video.Path -PathType Leaf)) {
-        # .srt files beside the video, named after it ("movie.srt", "movie.en.srt")
+        # Subtitle files beside the video, named after it ("movie.srt", "movie.en.ass")
         $stem = [IO.Path]::GetFileNameWithoutExtension($video.Path)
-        foreach ($f in Get-ChildItem -LiteralPath (Split-Path $video.Path) -Filter "*.srt" -File -ErrorAction SilentlyContinue) {
+        foreach ($f in Get-ChildItem -LiteralPath (Split-Path $video.Path) -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in ".srt", ".ass", ".ssa" }) {
             if ($f.Name.StartsWith("$stem.", [StringComparison]::OrdinalIgnoreCase)) {
                 [void]$choices.Add(@{ Kind = "file"; Path = $f.FullName; Label = $f.Name; Note = "beside this file"; Language = ($f.BaseName.Substring($stem.Length).TrimStart('.')) })
             }
@@ -538,7 +749,7 @@ function Get-SubChoices($video) {
             $known = $script:SubtitleLanguages | Where-Object { Test-Language $t.Language $_.Code } | Select-Object -First 1
             $label = if ($known) { $known.Name } elseif ($t.Language) { $t.Language } else { "Track $($t.Index)" }
             if ($t.Title) { $label = "$label, $($t.Title)" }
-            [void]$choices.Add(@{ Kind = "embedded"; Index = $t.Index; Path = $video.Path; Label = $label; Note = "inside this file"; Language = $t.Language })
+            [void]$choices.Add(@{ Kind = "embedded"; Index = $t.Index; SubIndex = $t.SubIndex; IsAss = $t.IsAss; Path = $video.Path; Label = $label; Note = "inside this file"; Language = $t.Language })
         }
     }
     foreach ($c in @($video.Captions)) {
@@ -583,6 +794,7 @@ function Use-SubChoice($choice, [switch]$Quiet) {
     $script:subsRequest++
     $label = "$($choice.Label) ($($choice.Note))"
     if ($choice.Kind -eq "file") { Set-Subs $choice.Path $label -Quiet:$Quiet; return }
+    if ($choice.IsAss -and ($script:player -or $rbFile.IsChecked) -and (Test-Libass)) { Set-AssSubs (Get-Item -LiteralPath $choice.Path).FullName $choice.SubIndex $label $choice.Index; return }
     $path = if ($choice.Kind -eq "caption") {
         Get-SubtitleCachePath "youtube" (($script:currentVideo.Path, $choice.Language, $choice.Auto) -join "|")
     } else {
@@ -613,6 +825,7 @@ function Start-VideoSubs($video, $chosen) {
     $script:currentVideo = $video
     $script:subsNotice = ""
     Show-If $btnAudio (@($video.Sounds).Count -gt 1)
+    Show-If $btnChapters (@($video.Chapters | Where-Object { $_ }).Count -gt 0)
     if ($chosen -and $chosen.Keep) { return }   # chosen just before pressing Start
     Clear-Subs
     if ($chosen -and $chosen.Off) { return }
@@ -636,7 +849,7 @@ function Start-VideoSubs($video, $chosen) {
 function Select-SrtFile {
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
     $dialog.Title = "Pick a subtitle file"
-    $dialog.Filter = "Subtitles (*.srt)|*.srt|All files|*.*"
+    $dialog.Filter = "Subtitles (*.srt, *.ass, *.ssa)|*.srt;*.ass;*.ssa|All files|*.*"
     if ($dialog.ShowDialog($window)) { $dialog.FileName }
 }
 
@@ -713,6 +926,17 @@ function Show-SubsMenu($button, $forItem) {
         [void]$menu.Items.Add((New-MenuItem "Generate with AI" "on this PC" "ai" $null $aiTicked))
         [void]$menu.Items.Add((New-MenuItem "Generate with AI, translated to English" "" "ai-english" $null ($forItem -and $forItem.Subs -and $forItem.Subs.Translate)))
     }
+    # Whatever's showing, in your language. Not for a queued video: its subtitles aren't chosen until it plays.
+    if (-not $forItem) {
+        $myLanguage = ($script:SubtitleLanguages | Where-Object { $_.Code -eq $code }).Name
+        $translate = New-MenuItem "Translate these to $myLanguage" "online, Google" "translate" $null $false
+        $translate.ToolTip = "Sends the subtitles' text to Google Translate. Change the language under My language."
+        if (-not $script:subsSource) {
+            $translate.IsEnabled = $false
+            $translate.Header = if ($script:aiJob) { "Translate to $myLanguage (once the AI has finished)" } else { "Translate to $myLanguage (turn subtitles on first)" }
+        }
+        [void]$menu.Items.Add($translate)
+    }
     [void]$menu.Items.Add((New-MenuItem "Search online" "" "search" $null $false))
     [void]$menu.Items.Add((New-MenuItem "Load a file" "" "load" $null $false))
     $line = New-Object System.Windows.Controls.Separator
@@ -756,6 +980,7 @@ function Invoke-SubsMenu($tag) {
     }
     $item = $script:subsMenuItem
     $picked = $null
+    if ($tag.Action -eq "translate") { Start-SubsTranslation; return }
     if ($tag.Action -in "ai", "ai-english") {
         if (-not (Confirm-AiTools)) { return }
         $translate = $tag.Action -eq "ai-english"
@@ -804,6 +1029,38 @@ function Invoke-SubsMenu($tag) {
         default { Stop-AiSubs; $script:subsRequest++; $script:subsNotice = ""; Set-Subs $picked.Path $picked.Name }
     }
 }
+# The subtitles showing now, translated in the background into your language. Kept, so it's instant next time.
+function Start-SubsTranslation {
+    $source = $script:subsSource
+    if (-not $source) { return }
+    $code = $script:settings.SubsLanguage
+    $languageName = ($script:SubtitleLanguages | Where-Object { $_.Code -eq $code }).Name
+    $key = if ($source.Srt) { $f = Get-Item -LiteralPath $source.Srt; ($f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks) -join "|" }
+           else { $f = Get-Item -LiteralPath $source.File; ($f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks, $source.Index) -join "|" }
+    $out = Get-SubtitleCachePath "translated" "$key|$code"
+    $label = "$(($script:subsName -replace ', in \w+$', '')), in $languageName"
+    Stop-AiSubs
+    $script:subsNotice = ""
+    $script:subsRequest++
+    if (Test-Path -LiteralPath $out) { Set-Subs $out $label; return }
+    # What's showing stays until the translation is ready
+    $script:subsWaiting = $true
+    Update-SubsLabel
+    $lblStatus.Text = "Translating the subtitles to $languageName. This takes a few seconds to a minute."
+    Start-SubtitleTask {
+        param($srt, $file, $index, $ffmpeg, $code, $out)
+        if (-not $srt) { [void](Save-EmbeddedSubtitle $ffmpeg $file $index "$out.source.srt"); $srt = "$out.source.srt" }
+        try { Convert-TranslatedSubtitles $srt $code $out } finally { Remove-Item -LiteralPath "$out.source.srt" -Force -ErrorAction SilentlyContinue }
+    } @($source.Srt, $source.File, $source.Index, $ffmpegExe, $code, $out) {
+        param($saved, $why, $tag)
+        if ($tag.Request -ne $script:subsRequest) { return }   # moved on since asking
+        $script:subsWaiting = $false
+        if ($why -or -not $saved) { $script:subsNotice = "Couldn't translate the subtitles: $why"; $lblStatus.Text = $script:subsNotice; Update-SubsLabel; return }
+        Set-Subs "$saved" $tag.Label -Quiet
+        $lblStatus.Text = "Subtitles translated."
+    } @{ Request = $script:subsRequest; Label = $label }
+}
+
 $btnSubs.Add_Click({ Show-SubsMenu $btnSubs $null })
 $btnItemSubs.Add_Click({
         $i = $lbQueue.SelectedIndex
@@ -812,7 +1069,7 @@ $btnItemSubs.Add_Click({
     })
 foreach ($step in @(@($btnSubsBack5, -5), @($btnSubsBack, -0.5), @($btnSubsFwd, 0.5), @($btnSubsFwd5, 5))) {
     $step[0].Tag = $step[1]
-    $step[0].Add_Click({ param($s) $script:overlay.Offset = [Math]::Round($script:overlay.Offset + [double]$s.Tag, 1); Update-SubsLabel })
+    $step[0].Add_Click({ param($s) $script:overlay.Offset = [Math]::Round($script:overlay.Offset + [double]$s.Tag, 1); if ($script:assSubs) { Update-PlayerAss }; Update-SubsLabel })
 }
 $btnSubsPause.Add_Click({
         if ($script:overlay.ClockPaused) { $script:overlay.ResumeClock(); $btnSubsPause.Content = "Pause" }
@@ -956,7 +1213,7 @@ function Start-YouTubeItem($item) {
         $script:player.Load($stream.File, $stream.AudioFile, $stream.Options, $stream.Duration, $stream.HasVideo, $stream.HasAudio)
         $tbFile.Text = $item.Path
         Show-NowPlaying $item.Name
-        Start-VideoSubs @{ Path = $item.Path; Name = $item.Name; Captions = $stream.Captions; SoundOptions = $stream.Options; AudioUrl = $(if ($stream.AudioFile) { $stream.AudioFile } else { $stream.File }) } $item.Subs
+        Start-VideoSubs @{ Path = $item.Path; Name = $item.Name; Captions = $stream.Captions; SoundOptions = $stream.Options; AudioUrl = $(if ($stream.AudioFile) { $stream.AudioFile } else { $stream.File }); Chapters = $stream.Chapters } $item.Subs
     } $item
 }
 
@@ -1059,7 +1316,7 @@ $btnStart.Add_Click({ try {
             Show-NowPlaying $name
             $script:lastStarved = 0; $script:slowTicks = 0
             $chosen = if ($item -and $item.Path -eq $source -and $item.Subs) { $item.Subs } elseif ($script:subsName -or $script:subsWaiting) { @{ Keep = $true } }
-            Start-VideoSubs @{ Path = $source; Name = $name; Tracks = $media.Tracks; Sounds = $media.Sounds; Captions = $stream.Captions; SoundOptions = $stream.Options; AudioUrl = $(if ($stream) { if ($stream.AudioFile) { $stream.AudioFile } else { $stream.File } }) } $chosen
+            Start-VideoSubs @{ Path = $source; Name = $name; Tracks = $media.Tracks; Sounds = $media.Sounds; Chapters = $(if ($stream) { $stream.Chapters } else { $media.Chapters }); Captions = $stream.Captions; SoundOptions = $stream.Options; AudioUrl = $(if ($stream) { if ($stream.AudioFile) { $stream.AudioFile } else { $stream.File } }) } $chosen
             $script:overlay.Player = $script:player
             $script:nowItem = if ($item -and $item.Path -eq $source) { $item } else {
                 @{ Path = $source; Name = $name; IsOnline = [bool]$stream; Site = "Online"; Subs = $null; Media = $(if ($media) { $media } else { @{ Duration = $stream.Duration; HasVideo = $true; HasAudio = $stream.HasAudio } }) }
@@ -1074,24 +1331,22 @@ $btnStart.Add_Click({ try {
         $script:viewerSamples = New-Object Collections.ArrayList
         $lblViewers.Text = ""
         $script:soundPids = @()
+        $script:soundFile = $null
         if (-not $rbFile.IsChecked) {
-            $soundApps = @(); $soundDevices = @()
-            foreach ($box in $lbSound.Items) {
-                if (-not $box.IsChecked) { continue }
-                $sound = $box.Tag
-                switch ($sound.Kind) {
-                    "own" { $a += "-AppAudio"; $script:soundPids += $script:windowProcs[$cbWindow.SelectedIndex].Id }
-                    "app" { $soundApps += $sound.Id; $script:soundPids += $sound.Id }
-                    "device" { $soundDevices += $sound.Name }
-                }
-            }
-            if ($soundApps) { $a += @("-AudioPid", ($soundApps -join ",")) }
-            if ($soundDevices) { $a += @("-AudioDevice", (Quote ($soundDevices -join "|"))) }
+            $script:soundOwnPid = if ($rbWindow.IsChecked) { $script:windowProcs[$cbWindow.SelectedIndex].Id }
+            $script:soundFile = Join-Path $env:TEMP "VRVideoStreamer-sound-$PID.txt"
+            Send-SoundPicks
+            $a += @("-SoundControl", (Quote $script:soundFile), "-SoundMemory", (Quote $script:quietFile))
         }
         $tunnelToken = $null
         if ($chkPublic.IsChecked) {
             $tunnelChoice = $tunnels[$cbTunnel.SelectedIndex].Value
             $a += @("-Public", "-Tunnel", $tunnelChoice)
+            # Through the remote control's proxy, so the public link carries the remote page too
+            if ($script:remote) {
+                $a += @("-TunnelPort", $script:remote.Port)
+                if (-not $script:recovering -or -not $script:remote.Secret) { $script:remote.Secret = New-RemoteSecret }
+            }
             if ($tunnelChoice -eq "permanent") {
                 $tunnelToken = Get-Secret "tunnel.token"
                 if (-not $tunnelToken -or -not $script:settings.PermanentHost) {
@@ -1107,7 +1362,11 @@ $btnStart.Add_Click({ try {
         $a += @("-Height", $q.Height, "-Bitrate", $q.Bitrate, "-AudioBitrate", $audioQualities[$cbAudioQuality.SelectedIndex].Value, "-Encoder", $encoders[$cbEncoder.SelectedIndex].Value)
 
         foreach ($tb in $linkBoxes.Values) { $tb.Text = "" }
-        foreach ($f in $OutLog, $ErrLog) { if (Test-Path $f) { Remove-Item $f -Force } }
+        # A stopped stream's tools can hold on to their logs for a moment, so each start gets new ones
+        foreach ($f in $OutLog, $ErrLog) { try { Remove-Item $f -Force -ErrorAction Stop } catch { } }
+        $script:logRun = [int]$script:logRun + 1
+        $script:OutLog = Join-Path $env:TEMP "VRVideoStreamer-out-$PID-$($script:logRun).txt"
+        $script:ErrLog = Join-Path $env:TEMP "VRVideoStreamer-err-$PID-$($script:logRun).txt"
         # Handed over this way so the token never shows in the list of running programs' command lines
         if ($tunnelToken) { $env:TUNNEL_TOKEN = $tunnelToken }
         $script:proc = Start-Process $psExe -ArgumentList ($a -join " ") -WindowStyle Hidden -PassThru `
@@ -1130,14 +1389,26 @@ function Stop-Preview {
 function Stop-Stream {
     # The stream script's job object takes ffmpeg, MediaMTX and cloudflared down with it
     if ($script:proc -and -not $script:proc.HasExited) { $script:userStopped = $true; Stop-Process -Id $script:proc.Id -Force }
+    if ($script:soundFile) { Remove-Item -LiteralPath $script:soundFile -Force -ErrorAction SilentlyContinue; $script:soundFile = $null }
     $script:overlay.Player = $null
     # A video's subtitles end with it, or the next stream would start with them. A capture's stay: they're not
     # tied to anything. They also stay through a restart after a failure, since it's the same video.
     if ($script:aiJob -or ($script:player -and -not $script:recovering)) { Clear-Subs }
     if ($script:player) { $script:player.Stop(); $script:player = $null }
     $script:currentVideo = $null
+    Show-If $btnChapters $false
     $script:ytLoading = $null
-    if (-not $script:recovering) { $script:nowItem = $null; $script:recoveryTimes = @(); $script:recoverNotice = "" }
+    if (-not $script:recovering) {
+        $script:nowItem = $null; $script:recoveryTimes = @(); $script:recoverNotice = ""
+        # Old remote links stop working with the stream they were for
+        if ($script:remote) { $script:remote.Secret = $null; $script:remote.State = "{}" }
+        $script:remoteNotice = ""
+    }
+    Reset-ShortLink
+    $tbRemote.Text = ""
+    $script:remoteLinkFor = $null
+    $script:publicShown = $null
+    $script:linkReconnecting = $false
     $lblViewers.Text = ""
     Stop-Preview
 }
@@ -1212,6 +1483,92 @@ function Update-ViewerStats {
     }
 }
 
+# --- Remote control: a web page friends can open to pause, skip, seek and add YouTube videos (RemoteProxy.cs) ---
+# Its port is fixed so a permanent link can point at it. If something else has it, streams work as before without a remote.
+$script:remote = $null
+try { $script:remote = New-Object RemoteProxy(8890, 8888, (Join-Path $PSScriptRoot "remote.html")) } catch { }
+function New-RemoteSecret {
+    $bytes = New-Object byte[] 18
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose()
+    [Convert]::ToBase64String($bytes).Replace("+", "-").Replace("/", "_")
+}
+
+# The remote link is the public link's address plus the secret, once the link is up. A permanent link set up before
+# the remote existed points past it, so that's checked rather than handing out a link that can't work.
+function Update-RemoteLink {
+    if (-not $script:remote -or -not $script:remote.Secret -or $tbPublic.Text -notmatch '^(https://[^/]+)/') { $tbRemote.Text = ""; $tbShort.Text = ""; $script:remoteLinkFor = $null; return }
+    $link = "$($Matches[1])/remote/$($script:remote.Secret)/"
+    if ($script:remoteLinkFor -eq $link) { return }
+    $script:remoteLinkFor = $link
+    $tbRemote.Text = $link
+    $tbShort.Text = "$($Matches[1])$([RemoteProxy]::ShortPath)"
+    Start-SubtitleTask {
+        param($link)
+        try { (Invoke-WebRequest "${link}state" -UseBasicParsing -TimeoutSec 15).StatusCode } catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { -1 } }
+    } @($link) {
+        param($status, $why, $link)
+        if ($tbRemote.Text -ne $link -or $status -eq 200 -or $status -eq -1) { return }   # -1: this PC can't reach it yet, which isn't the link's fault
+        $tbRemote.Text = if ($script:publicVia -eq "Your permanent link") { "(Change your permanent link's URL to 127.0.0.1:8890 in Cloudflare to use this)" } else { "(The remote control isn't reachable through this link)" }
+        $tbShort.Text = ""   # served by the same proxy, so it isn't there either
+    } $link
+}
+
+# What the page shows, refreshed with the window's own display
+function Update-RemoteState {
+    if (-not $script:remote -or -not $script:remote.Secret) { return }
+    $pl = $script:player
+    $state = @{ mode = $(if (-not $script:proc) { "stopped" } elseif ($pl) { "player" } else { "capture" }); viewers = "$($lblViewers.Text)" }
+    if ($pl) {
+        $state.title = "$($lblNow.Text)"
+        $state.position = [Math]::Round([double]$pl.Position, 1)
+        $state.duration = [Math]::Round([double]$pl.Duration, 1)
+        $state.paused = [bool]$pl.Paused
+        $state.ended = [bool]$pl.Ended
+        $state.loading = [bool]$script:ytLoading
+        $state.queue = @($script:queue | Select-Object -First 30 | ForEach-Object { @{ name = "$($_.Name)"; length = [Math]::Round([double]$_.Media.Duration) } })
+        $state.more = [Math]::Max(0, $script:queue.Count - 30)
+        $state.chapters = @($script:currentVideo.Chapters | Where-Object { $_ } | ForEach-Object { @{ start = [double]$_.Start; title = "$($_.Title)" } })
+        $state.canAdd = [bool]$script:ytDlpExe -and $script:queue.Count -lt 100
+        $state.notice = "$($script:remoteNotice)"
+    }
+    $script:remote.State = ConvertTo-Json $state -Compress -Depth 4
+}
+
+# Commands from the page, carried out here on the window's own thread
+function Invoke-RemoteCommands {
+    if (-not $script:remote) { return }
+    $text = $null
+    while ($script:remote.Commands.TryDequeue([ref]$text)) {
+        try { $command = $text | ConvertFrom-Json } catch { continue }
+        $pl = $script:player
+        if (-not $pl -or -not $script:remote.Secret) { continue }
+        switch ("$($command.action)") {
+            "toggle" { if ($pl.Ended) { $pl.Seek(0); $pl.Play() } elseif ($pl.Paused) { $pl.Play() } else { $pl.Pause() } }
+            "back" { if ($pl.Duration -gt 0) { $pl.Seek($pl.Position - 10) } }
+            "forward" { if ($pl.Duration -gt 0) { $pl.Seek($pl.Position + 10) } }
+            "seek" { $at = 0.0; if ($pl.Duration -gt 0 -and [double]::TryParse("$($command.at)", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$at)) { $pl.Seek([Math]::Max(0, [Math]::Min($at, $pl.Duration))) } }
+            "skip" { if ($script:queue.Count) { Start-QueueItem 0 } }
+            "add" {
+                # Only YouTube: other addresses would have this PC fetch whatever a remote user names
+                $link = "$($command.link)".Trim()
+                if ($link -notmatch '^https?://([a-z0-9-]+\.)*(youtube\.com|youtu\.be)/\S+$' -or -not $script:ytDlpExe) { $script:remoteNotice = "Only YouTube links can be added from the remote."; continue }
+                if ([int]$script:remoteAdding -ge 3 -or $script:queue.Count -ge 100) { $script:remoteNotice = "Too many at once. Try again in a moment."; continue }
+                $script:remoteAdding = [int]$script:remoteAdding + 1
+                $script:remoteNotice = "Adding a video..."
+                Get-YouTubeLinkInfo $link {
+                    param($info, $why, $link)
+                    $script:remoteAdding = [Math]::Max(0, [int]$script:remoteAdding - 1)
+                    if (-not $info) { $script:remoteNotice = "Couldn't add that link: $why"; return }
+                    $found = @(if ($info.entries) { @($info.entries | Where-Object { $_ } | Select-Object -First 50) } else { $info })
+                    Add-YouTubeItems @($found | ForEach-Object { New-OnlineItem $_ $link })
+                    $script:remoteNotice = "Added $($found.Count) to Up next."
+                    $lblStatus.Text = "Someone added $($found.Count) video$(if ($found.Count -ne 1) { 's' }) from the remote control."
+                } $link
+            }
+        }
+    }
+}
+
 # --- The screen viewers see while paused and between videos. Redrawn only when its words change. ---
 function Update-Card($pl) {
     if (-not $chkCard.IsChecked) { $pl.Card = $null; $script:cardKey = ""; return }
@@ -1278,8 +1635,12 @@ $btnPermanent.Add_Click({
 $sliderVolume.Value = $script:settings.Volume
 $lblVolume.Text = "$([int]$sliderVolume.Value)%"
 $chkEvenOut.IsChecked = [bool]$script:settings.EvenOut
+# If this program was ever closed without cleaning up, the programs it silenced come back now
+$script:quietFile = Join-Path $script:AppData "quieted-programs.txt"
+Restore-QuietPrograms
 $chkCard.IsChecked = [bool]$script:settings.Card
 Show-If $btnAudio $false
+Show-If $btnChapters $false
 
 # Turning the preview off saves the CPU it takes to decode the stream. Viewers aren't affected.
 function Update-PreviewLabel { $lblPreview.Text = if ($chkPreview.IsChecked) { "A preview of what viewers see appears here" } else { "Preview off" } }
@@ -1313,6 +1674,28 @@ $chkEvenOut.Add_Click({
         if ($script:player) { $script:player.EvenOutVolume = [bool]$chkEvenOut.IsChecked; $script:player.Restart() }
     })
 $chkCard.Add_Click({ $script:settings.Card = [bool]$chkCard.IsChecked; Save-Settings $script:settings })
+$btnChapters.Add_Click({
+        $chapters = @($script:currentVideo.Chapters | Where-Object { $_ })
+        if (-not $script:player -or -not $chapters) { return }
+        $now = $script:player.Position
+        $current = @($chapters | Where-Object { $_.Start -le $now + 0.5 }) | Select-Object -Last 1
+        $menu = New-Object System.Windows.Controls.ContextMenu
+        $number = 0
+        foreach ($chapter in $chapters) {
+            $number++
+            $row = New-Object System.Windows.Controls.MenuItem
+            $title = if ($chapter.Title) { $chapter.Title } else { "Chapter $number" }
+            $row.Header = "$(Format-Time $chapter.Start)   " + ($title -replace '_', '__')
+            $row.Tag = [double]$chapter.Start
+            $row.IsChecked = $chapter -eq $current
+            $row.Add_Click({ param($s) if ($script:player) { $script:player.Seek([double]$s.Tag) } })
+            [void]$menu.Items.Add($row)
+        }
+        $btnChapters.ContextMenu = $menu
+        $menu.PlacementTarget = $btnChapters
+        $menu.Placement = "Bottom"
+        $menu.IsOpen = $true
+    })
 $btnAudio.Add_Click({
         $sounds = @($script:currentVideo.Sounds)
         $menu = New-Object System.Windows.Controls.ContextMenu
@@ -1333,7 +1716,7 @@ $btnAudio.Add_Click({
         $menu.IsOpen = $true
     })
 $btnStop.Add_Click({ Stop-Stream })
-$window.Add_Closing({ Stop-Stream })
+$window.Add_Closing({ Stop-Stream; Restore-QuietPrograms })
 
 function Read-Shared($path, $tailBytes = 0) {
     if (-not (Test-Path $path)) { return "" }
@@ -1363,11 +1746,24 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(500)
 $timer.Add_Tick({ try {
         if (-not $script:proc) { return }
         $out = Read-Shared $OutLog
-        if (-not $linkBoxes.public.Text -and $out -match 'PUBLIC LINK \(via ([^)]+)\)[^\r\n]*\r?\n\s+(https://\S+)') {
-            $script:publicVia = $Matches[1]
-            $linkBoxes.public.Text = $Matches[2]
+        # The newest link: the stream script opens another by itself if the link service drops (a free service's is a new address)
+        $newest = [regex]::Matches($out, 'PUBLIC LINK \(via ([^)]+)\)[^\r\n]*\r?\n\s+(https://\S+)') | Select-Object -Last 1
+        if ($newest -and $newest.Groups[2].Value -ne $script:publicShown) {
+            $changed = [bool]$script:publicShown
+            $script:publicShown = $newest.Groups[2].Value
+            $script:publicVia = $newest.Groups[1].Value
+            $linkBoxes.public.Text = $script:publicShown
             $script:linkCopied = Copy-ToClipboard $linkBoxes.public.Text
+            Reset-ShortLink
+            if ($changed) {
+                $script:recoverNotice = "The public link service dropped and reconnected by itself, so viewers on the public link need the new one$(if ($script:linkCopied) { ' (copied)' }). Everyone else wasn't interrupted."
+                $script:recoverNoticeAt = Get-Date
+                $script:publicFails = 0
+            }
         }
+        $lastDrop = $out.LastIndexOf("The public link service disconnected")
+        $script:linkReconnecting = $lastDrop -ge 0 -and (-not $newest -or $lastDrop -gt $newest.Index)
+        Update-RemoteLink
         $tunnelStep = ([regex]::Matches($out, 'Opening public link via ([^\r\n]+?)\.\.\.') | Select-Object -Last 1)
         $publicFailed = $chkPublic.IsChecked -and $out -match 'Could not open a public link'
         if ($publicFailed) { $linkBoxes.public.Text = "(failed - press Stop, then Start to try again)" }
@@ -1428,7 +1824,8 @@ $timer.Add_Tick({ try {
             Update-Preview
             $script:liveTicks = [int]$script:liveTicks + 1
             if ($script:liveTicks % 4 -eq 0) { Update-ViewerStats }
-            if ($script:liveTicks % 30 -eq 0) { Test-PublicLink }
+            if ($script:liveTicks % 30 -eq 0 -and -not $script:linkReconnecting) { Test-PublicLink }
+            Update-RemoteState
             $soundGone = @($script:soundPids | Where-Object { -not (Get-Process -Id $_ -ErrorAction SilentlyContinue) }).Count -gt 0
             $minimized = $script:streamHwnd -and [UI.Win]::IsIconic([IntPtr]$script:streamHwnd)
             $lines = @()
@@ -1442,15 +1839,21 @@ $timer.Add_Tick({ try {
             if ($script:ytNotice) { $lines += $script:ytNotice }
             if ($script:subsNotice) { $lines += $script:subsNotice }
             if ($pl -and $script:slowTicks -gt 0) { $lines += "The video is arriving more slowly than it plays, so viewers will see stutters." }
-            if ($publicFailed) { $lines += "Public link failed. Only you and your Wi-Fi can watch. Stop, pick another service next to 'public link', and Start again." }
+            if ($script:linkReconnecting) { $lines += "The public link service dropped. Reconnecting by itself... Viewers on Wi-Fi and this PC aren't affected." }
+            elseif ($publicFailed) { $lines += "Public link failed. Only you and your Wi-Fi can watch. Stop, pick another service next to 'public link', and Start again." }
             elseif ($linkBoxes.public.Text) { $lines += "Public link (via $($script:publicVia))$(if ($script:linkCopied) { ' copied to clipboard' } else { ' ready: press Copy next to it' }). Anyone with it can watch until you press Stop." }
-            if ($soundGone) { $lines += "A program you picked for sound has closed, so viewers no longer hear it. Stop and Start to change the sound." }
+            if ($soundGone) { $lines += "A program you picked for sound has closed, so viewers no longer hear it. Press Refresh list and tick another." }
+            # Only for a source that's still ticked: a problem with one you've since unticked no longer matters
+            $soundProblem = [regex]::Matches($out, "(?m)^Sound problem \[([^\]]+)\]: ([^\r\n]+)") | Where-Object { $script:soundFile -and @(Get-Content -LiteralPath $script:soundFile -ErrorAction SilentlyContinue | ForEach-Object { ($_ -split "`t")[0] }) -contains $_.Groups[1].Value } | Select-Object -Last 1
+            if ($soundProblem) { $soundGone = $true; $lines += "Couldn't capture $($soundProblem.Groups[1].Value -replace '^(dev|app):', ''): $($soundProblem.Groups[2].Value)" }
+            $muteProblem = [regex]::Matches($out, "(?m)^Sound problem \[mute\]: ([^\r\n]+)") | Select-Object -Last 1
+            if ($muteProblem -and @($script:soundQuiet).Count) { $soundGone = $true; $lines += "Couldn't mute a program on this PC: $($muteProblem.Groups[1].Value)" }
             # Why the service that gave the link wasn't the first choice, or why none worked
             $skipped = [regex]::Matches($out, "(?m)^(.+?) didn't work: ([^\r\n]+)") | Where-Object { $_.Groups[1].Value -ne $script:publicVia } | Select-Object -Last 1
             if ($skipped -and ($linkBoxes.public.Text -or $publicFailed)) { $lines += "$($skipped.Groups[1].Value) was skipped: $($skipped.Groups[2].Value)" }
             elseif ($out -match "(?m)^(Note: the link is working[^\r\n]+)") { $lines += $Matches[1] }
             $lblStatus.Text = $lines -join "`n"
-            $warn = $soundGone -or $publicFailed -or $minimized -or $script:slowTicks -gt 0
+            $warn = $soundGone -or $publicFailed -or $minimized -or $script:slowTicks -gt 0 -or $script:linkReconnecting
             $lblStatus.Foreground = if ($warn) { $redBrush } else { $mutedBrush }
         } elseif ($chkPublic.IsChecked -and -not $linkBoxes.public.Text) {
             $lblStatus.Text = "Starting... opening public link" +
@@ -1466,9 +1869,43 @@ $quickTimer.Add_Tick({ try {
         Update-YouTubeJobs
         Update-SubtitleTasks
         Update-AiSubs
+        Invoke-RemoteCommands
+        # Slider moves are gathered up rather than sent and saved dozens of times a second
+        if ($script:soundDirty -and $script:soundFile) { Send-SoundPicks }
+        if ($script:settingsDirty -and (-not $script:settingsSavedAt -or ((Get-Date) - $script:settingsSavedAt).TotalSeconds -ge 1)) {
+            $script:settingsDirty = $false
+            $script:settingsSavedAt = Get-Date
+            $script:settings.SoundVolumes = (@($script:soundVolumes.GetEnumerator() | Where-Object { $_.Value -ne 100 } | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`n")
+            try { Save-Settings $script:settings } catch { }
+        }
         $lblSubsTime.Text = if ($script:subsName -and -not $script:player -and -not $rbFile.IsChecked) { Format-Time $script:overlay.ClockPosition } else { "" }
     } catch { $lblStatus.Text = "Problem updating the window: $($_.Exception.Message)" } })
 $quickTimer.Start()
+
+# --- Is there a newer version? Asked of GitHub once per start, in the background; nothing is downloaded. ---
+$script:releasesApi = "https://api.github.com/repos/Kubi-Cle/VR-Video-Streamer/releases/latest"
+function Get-ProgramVersion {
+    $v = (Get-Item -LiteralPath (Join-Path (Split-Path $PSScriptRoot) 'VR Video Streamer.exe') -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+    $parsed = $null
+    if ([version]::TryParse("$v", [ref]$parsed)) { New-Object version($parsed.Major, $parsed.Minor, [Math]::Max(0, $parsed.Build)) }
+}
+if ($script:settings.UpdateCheck -and (Get-ProgramVersion)) {
+    Start-SubtitleTask {
+        param($api)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $r = Invoke-RestMethod $api -TimeoutSec 15 -Headers @{ "User-Agent" = "VR Video Streamer"; Accept = "application/vnd.github+json" }
+        @{ Tag = "$($r.tag_name)"; Page = "$($r.html_url)" }
+    } @($script:releasesApi) {
+        param($latest, $why)
+        if (-not $latest -or $latest.Tag -notmatch '(\d+)\.(\d+)(?:\.(\d+))?') { return }   # offline, or GitHub busy: try again next start
+        $theirs = New-Object version([int]$Matches[1], [int]$Matches[2], [int]("0$($Matches[3])"))
+        if ($theirs -le (Get-ProgramVersion) -or $latest.Page -notmatch '^https://github\.com/') { return }
+        $lblUpdate.Text = "Version $theirs is available"
+        $btnUpdate.Tag = $latest.Page
+        Show-If $btnUpdate $true
+    }
+}
+$btnUpdate.Add_Click({ if ("$($btnUpdate.Tag)" -match '^https://github\.com/') { Start-Process "$($btnUpdate.Tag)" } })
 
 $script:windowReady = $true
 Update-SoundList
@@ -1480,6 +1917,8 @@ Update-SubsLabel
 $timer.Stop()
 $quickTimer.Stop()
 Stop-Stream
+if ($script:remote) { $script:remote.Stop() }
+$script:settings.SoundVolumes = (@($script:soundVolumes.GetEnumerator() | Where-Object { $_.Value -ne 100 } | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`n")
 try { Save-Settings $script:settings } catch { }
 $script:overlay.Stop()
 Remove-Item -LiteralPath $subtitleTextFile -Force -ErrorAction SilentlyContinue

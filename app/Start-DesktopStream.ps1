@@ -31,6 +31,8 @@ param(
     [ValidateSet("cpu", "nvenc", "amf", "qsv")]
     [string]$Encoder = "cpu",
     [string]$AudioDevice = "",          # DirectShow audio device name, see -ListAudio; several: "name 1|name 2"
+    [string]$SoundControl = "",         # used by StreamUI.ps1: text file listing the sound sources, re-read while streaming (SoundMixer.cs)
+    [string]$SoundMemory = "",          # used by StreamUI.ps1: where to note the volumes of programs turned down on this PC (SessionQuiet.cs)
     [string]$StreamName = "desktop",
     [switch]$ListMonitors,
     [switch]$ListAudio,
@@ -39,6 +41,7 @@ param(
     [ValidateSet("auto", "cloudflare", "localhost.run", "pinggy", "permanent")]
     [string]$Tunnel = "auto",           # which service makes the public link; auto = try them in order
     [string]$PermanentHost = "",        # with -Tunnel permanent: your address, e.g. stream.example.com (token in $env:TUNNEL_TOKEN)
+    [int]$TunnelPort = 8888,            # what the public link points at: MediaMTX, or StreamUI.ps1's RemoteProxy in front of it
     [string]$PipeInput = "",            # used by StreamUI.ps1: read raw frames + PCM from \\.\pipe\<name>-v / -a
     [string]$PipeSize = "",             # frame size of -PipeInput, e.g. 1920x1080
     [string]$SubtitleText = "",         # used by StreamUI.ps1: text file holding the current subtitle (SubtitleOverlay.cs)
@@ -129,7 +132,7 @@ hlsAddress: :8888
 hlsAllowOrigin: '*'
 hlsAlwaysRemux: yes
 hlsVariant: mpegts
-hlsSegmentCount: 3
+hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 paths:
   all_others:
@@ -305,61 +308,46 @@ switch ($Source) {
         }
     }
 }
-# Sound sources, each its own ffmpeg input after the picture (input 0). Programs don't have to be the
-# one in the picture. Delay = ms to hold the sound back so it matches the picture:
+# Sound sources all arrive through one pipe from SoundMixer.cs (input 1), which can change them while streaming.
+# Programs don't have to be the one in the picture. Hold = ms to keep the sound back so it matches the picture:
 # - program capture: the picture reaches the stream ~100 ms after the sound (window capture + FrameRelay).
 #   Measured: sound 90-150 ms early without this, +30 ms late with 120.
 # - monitor with a program's sound: measured 46-113 ms early (average 67) without this.
-$soundDelays = @()
+# A device opened by the main ffmpeg drops the picture to ~2 real fps with NVENC, so devices are captured by
+# their own ffmpeg (see DeviceAudio.cs).
+$soundFilter = $null
 if ($Source -in "monitor", "window") {
-    $appCaptures = @()
+    $soundKeys = @()
     foreach ($soundId in @($AudioPid -split "[, ]+" | Where-Object { $_ } | Select-Object -Unique)) {
         $soundProc = Get-Process -Id $soundId -ErrorAction SilentlyContinue
         if (-not $soundProc) { Write-Host "Skipping sound from process $soundId, it has closed." -ForegroundColor Yellow; continue }
-        Add-Type -Path (Join-Path $PSScriptRoot "ProcessAudio.cs")
-        $audioPipe = "vvs-app-$PID-$($appCaptures.Count)"
-        $capture = New-Object ProcessAudioCapture([int]$soundId, $audioPipe)
-        $capture.Start()
-        $appCaptures += $capture
-        $ffArgs += @("-thread_queue_size", "1024", "-probesize", "32", "-analyzeduration", "0",
-                     "-f", "s16le", "-ar", "48000", "-ch_layout", "stereo", "-i", "\\.\pipe\$audioPipe")
-        $soundDelays += $(if ($relay) { 100 } else { 65 })
+        $soundKeys += "app:$soundId"
         $what += " + sound from $($soundProc.ProcessName)"
     }
-    # A device opened by the main ffmpeg drops the picture to ~2 real fps with NVENC, so it's captured
-    # by its own ffmpeg (see DeviceAudio.cs) and arrives through a steady pipe, just like a program's sound
-    $deviceCaptures = @()
     foreach ($device in @($AudioDevice -split "\|" | Where-Object { $_ })) {
-        Add-Type -Path (Join-Path $PSScriptRoot "DeviceAudio.cs")
-        $audioPipe = "vvs-dev-$PID-$($deviceCaptures.Count)"
-        $capture = New-Object DeviceAudioCapture($ffmpeg, $device, $audioPipe)
-        $capture.Start()
-        $deviceCaptures += $capture
-        $ffArgs += @("-thread_queue_size", "1024", "-probesize", "32", "-analyzeduration", "0",
-                     "-f", "s16le", "-ar", "48000", "-ch_layout", "stereo", "-i", "\\.\pipe\$audioPipe")
-        $soundDelays += $(if ($relay) { 100 } else { 65 })
+        $soundKeys += "dev:$device"
         $what += " + sound from $device"
     }
-    if ($soundDelays.Count -eq 1) { $maps += @("-map", "1:a") }
-    elseif ($soundDelays.Count -gt 1) {
-        # Mix at full volume rather than amix's default of turning each source down; the limiter stops
-        # loud moments from clipping. Each source starts at time 0 whatever order the inputs opened in.
-        $chains = @(); $labels = ""
-        for ($i = 0; $i -lt $soundDelays.Count; $i++) {
-            $chains += "[$($i + 1):a]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,adelay=delays=$($soundDelays[$i]):all=1[s$i]"
-            $labels += "[s$i]"
-        }
-        $mix = ($chains -join ";") + ";${labels}amix=inputs=$($soundDelays.Count):duration=longest:normalize=0,alimiter=limit=0.95:level=0[mix]"
-        $maps += @("-filter_complex", $mix, "-map", "[mix]")
+    if ($soundKeys -or $SoundControl) {
+        Add-Type -Path (Join-Path $PSScriptRoot "ProcessAudio.cs"), (Join-Path $PSScriptRoot "DeviceAudio.cs"), (Join-Path $PSScriptRoot "SoundMixer.cs"), (Join-Path $PSScriptRoot "SessionQuiet.cs") -ReferencedAssemblies System.Core
+        $soundPipe = "vvs-sound-$PID"
+        $soundMixer = New-Object SoundMixer($ffmpeg, $soundPipe, $SoundControl, $SoundMemory, [int]$(if ($relay) { 100 } else { 65 }))
+        $soundMixer.Start([string[]]$soundKeys)
+        $ffArgs += @("-thread_queue_size", "1024", "-probesize", "32", "-analyzeduration", "0",
+                     "-f", "f32le", "-ar", "48000", "-ch_layout", "stereo", "-i", "\\.\pipe\$soundPipe")
+        $maps += @("-map", "1:a")
+        $hasAudio = $true
+        # Mixed at full volume rather than each source turned down; this stops loud moments from clipping
+        $soundFilter = "alimiter=limit=0.95:level=0"
     }
-    if ($soundDelays.Count) { $hasAudio = $true }
 }
 
 # --- Encoder settings (H.264 main profile, 1 keyframe per second so HLS segments line up) ---
 $gop = $Fps
 $video = switch ($Encoder) {
     "nvenc" { @("-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-profile:v", "main") }
-    "amf"   { @("-c:v", "h264_amf", "-usage", "lowlatency", "-profile:v", "main") }
+    # In low latency mode AMF ignores -g and sends one keyframe ever, and HLS can't make segments without them
+    "amf"   { @("-c:v", "h264_amf", "-usage", "lowlatency", "-profile:v", "main", "-force_key_frames", "expr:gte(t,n_forced*1)", "-forced_idr", "1") }
     "qsv"   { @("-c:v", "h264_qsv", "-preset", "veryfast", "-profile:v", "main") }
     # x264's sliced threads (from -tune zerolatency) drop capture to ~2 fps when there's an audio input
     default { @("-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-x264-params", "sliced-threads=0", "-profile:v", "main") }
@@ -379,7 +367,7 @@ if ($SubtitleText -and (Test-Path -LiteralPath $subtitleFont)) {
 $video += @("-r", $Fps, "-b:v", $Bitrate, "-maxrate", $Bitrate, "-bufsize", $Bitrate, "-g", $gop, "-keyint_min", $gop,
             "-pix_fmt", "yuv420p", "-vf", $videoFilter)
 $audio = if ($hasAudio) { @("-c:a", "aac", "-b:a", $AudioBitrate, "-ar", "48000", "-ac", "2") } else { @("-an") }
-if ($soundDelays.Count -eq 1 -and $soundDelays[0]) { $audio += @("-af", "adelay=delays=$($soundDelays[0]):all=1") }
+if ($soundFilter) { $audio += @("-af", $soundFilter) }
 # Publish over RTMP: its sound and picture share one clock, which keeps the HLS links in sync
 # (measured within one frame). Publishing over RTSP left HLS sound ~250 ms late.
 $ffArgs += $maps + $video + $audio + @("-f", "flv", "rtmp://127.0.0.1:1935/$StreamName")
@@ -406,17 +394,18 @@ Get-ChildItem $ToolsDir -Include "cloudflared*.log", "tunnel-*.log*" -Recurse -E
     ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch { } }
 
 $server = Start-Process $MediaMtxExe -ArgumentList "`"$ConfigPath`"" -WorkingDirectory $ToolsDir -PassThru -WindowStyle Hidden
-$tunnelProc = $null
 try {
     Start-Sleep -Milliseconds 800
     if ($server.HasExited) { throw "MediaMTX failed to start (is port 8554/8888 already in use?)" }
 
     $publicUrl = $null
+    $tunnelState = [hashtable]::Synchronized(@{ Proc = $null; N = 0 })
     if ($Public) {
         # Free tunnels that need no account, tried in order. Each gives a random https address per run.
         # Cloudflare first (fastest, no time limit); localhost.run and Pinggy go over the SSH client
         # built into Windows, so they need nothing installed.
         $ssh = "$env:WINDIR\System32\OpenSSH\ssh.exe"
+        $target = "127.0.0.1:$TunnelPort"
         # A throwaway key just for these tunnels: Pinggy otherwise waits at a password prompt nobody can
         # answer in a hidden window, and IdentitiesOnly stops ssh offering your own ~/.ssh keys to them.
         # Kept per PC, outside this folder, so sharing the folder never shares a private key.
@@ -430,84 +419,124 @@ try {
                    " -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes"
         $providers = @(
             @{ Id = "cloudflare"; Name = "Cloudflare"; Exe = $CloudflaredExe; Tries = 3; Pattern = 'https://[a-z0-9-]+\.trycloudflare\.com'
-               Connected = 'Registered tunnel connection'; Args = "tunnel --no-autoupdate --url http://127.0.0.1:8888" },
+               Connected = 'Registered tunnel connection'; Args = "tunnel --no-autoupdate --url http://$target" },
             @{ Id = "localhost.run"; Name = "localhost.run"; Exe = $ssh; Tries = 2; Pattern = 'https://[a-z0-9]+\.lhr\.life'
-               Args = "$sshOpts -R 80:127.0.0.1:8888 nokey@localhost.run" },
+               Args = "$sshOpts -R 80:$target nokey@localhost.run" },
             # Last resort: Pinggy's free addresses contain your public IP, and stop after 60 minutes
             @{ Id = "pinggy"; Name = "Pinggy - stops after 60 min, link shows your IP"; Exe = $ssh; Tries = 2
                Pattern = 'https://(?!dashboard\.)[a-z0-9-]+\.[a-z0-9.-]*pinggy[a-z0-9.-]*'
-               Args = "$sshOpts -p 443 -R0:127.0.0.1:8888 free.pinggy.io" },
+               Args = "$sshOpts -p 443 -R0:$target free.pinggy.io" },
             # Your own Cloudflare tunnel: the address never changes, so it isn't read from a log.
             # Only when asked for by name, since it needs setting up. cloudflared reads the token from TUNNEL_TOKEN.
             @{ Id = "permanent"; Name = "Your permanent link"; Exe = $CloudflaredExe; Tries = 2; Fixed = "https://$PermanentHost"
                Connected = 'Registered tunnel connection'; Args = "tunnel --no-autoupdate run" }
         ) | Where-Object { ($Tunnel -eq "auto" -and $_.Id -ne "permanent") -or $_.Id -eq $Tunnel }
-        # The last error a tunnel program logged, for telling people why a service was skipped
-        function Get-TunnelError($log) {
-            $line = Select-String -Path $log, "$log.err" -Pattern ' ERR |denied|refused|timed out|failed|error' -ErrorAction SilentlyContinue | Select-Object -Last 1
-            if ($line) { $text = ($line.Line -replace '^\S+Z\s+', '').Trim(); $text.Substring(0, [Math]::Min(140, $text.Length)) } else { "no details in its log" }
-        }
-        $n = 0
-        foreach ($prov in $providers) {
-            if ($publicUrl) { break }
-            if (-not (Test-Path $prov.Exe)) { continue }
-            for ($attempt = 1; $attempt -le $prov.Tries -and -not $publicUrl; $attempt++) {
-                Write-Host "Opening public link via $($prov.Name)$(if ($attempt -gt 1) { " (try $attempt of $($prov.Tries))" })..."
-                if ($tunnelProc -and -not $tunnelProc.HasExited) { Stop-Process -Id $tunnelProc.Id -Force; $tunnelProc.WaitForExit(3000) | Out-Null }
-                $n++
-                $TunnelLog = Join-Path $ToolsDir "tunnel-$PID-$n.log"
-                $tunnelProc = Start-Process $prov.Exe -ArgumentList $prov.Args -PassThru -WindowStyle Hidden `
-                    -RedirectStandardOutput $TunnelLog -RedirectStandardError "$TunnelLog.err"
-                $candidate = $prov.Fixed
-                for ($t = 0; $t -lt 40 -and -not $candidate -and -not $tunnelProc.HasExited; $t++) {
-                    Start-Sleep -Milliseconds 500
-                    $m = Select-String -Path $TunnelLog, "$TunnelLog.err" -Pattern $prov.Pattern -ErrorAction SilentlyContinue |
-                        Select-Object -First 1
-                    if ($m) { $candidate = $m.Matches[0].Value }
-                }
-                $why = if ($candidate) { "" } elseif ($tunnelProc.HasExited) { "it closed: $(Get-TunnelError $TunnelLog)" } else { "no link after 20 s: $(Get-TunnelError $TunnelLog)" }
-
-                # A new Cloudflare address doesn't exist in DNS for the first few seconds. Asking this PC's DNS
-                # during that time makes it remember "doesn't exist" for 60 s (measured), which used to fail the
-                # check below even though the link was fine. So first wait for it to connect, and for the
-                # address to exist on Cloudflare's own DNS, which doesn't get stuck like that.
-                $connected = $false; $inPublicDns = $false
-                if ($candidate -and $prov.Connected) {
-                    for ($t = 0; $t -lt 60 -and -not $connected -and -not $tunnelProc.HasExited; $t++) {
-                        $connected = [bool](Select-String -Path $TunnelLog, "$TunnelLog.err" -Pattern $prov.Connected -ErrorAction SilentlyContinue)
-                        if (-not $connected) { Start-Sleep -Milliseconds 500 }
+        # Opens a link with the first service that works, as @{ Url; Via }. The watchdog below runs this too, on its
+        # own thread, so it takes everything as arguments and writes straight to the output the window reads.
+        $openLink = {
+            param($providers, $ToolsDir, $tag, $state)
+            function Say($text) { [Console]::Out.WriteLine($text); [Console]::Out.Flush() }
+            # The last error a tunnel program logged, for telling people why a service was skipped
+            function Get-TunnelError($log) {
+                $line = Select-String -Path $log, "$log.err" -Pattern ' ERR |denied|refused|timed out|failed|error' -ErrorAction SilentlyContinue | Select-Object -Last 1
+                if ($line) { $text = ($line.Line -replace '^\S+Z\s+', '').Trim(); $text.Substring(0, [Math]::Min(140, $text.Length)) } else { "no details in its log" }
+            }
+            $publicUrl = $null; $publicVia = $null
+            $tunnelProc = $state.Proc
+            foreach ($prov in $providers) {
+                if ($publicUrl) { break }
+                if (-not (Test-Path $prov.Exe)) { continue }
+                for ($attempt = 1; $attempt -le $prov.Tries -and -not $publicUrl; $attempt++) {
+                    Say "Opening public link via $($prov.Name)$(if ($attempt -gt 1) { " (try $attempt of $($prov.Tries))" })..."
+                    if ($tunnelProc -and -not $tunnelProc.HasExited) { Stop-Process -Id $tunnelProc.Id -Force; $tunnelProc.WaitForExit(3000) | Out-Null }
+                    $state.N++
+                    $TunnelLog = Join-Path $ToolsDir "tunnel-$tag-$($state.N).log"
+                    $tunnelProc = Start-Process $prov.Exe -ArgumentList $prov.Args -PassThru -WindowStyle Hidden `
+                        -RedirectStandardOutput $TunnelLog -RedirectStandardError "$TunnelLog.err"
+                    $state.Proc = $tunnelProc
+                    $candidate = $prov.Fixed
+                    for ($t = 0; $t -lt 40 -and -not $candidate -and -not $tunnelProc.HasExited; $t++) {
+                        Start-Sleep -Milliseconds 500
+                        $m = Select-String -Path $TunnelLog, "$TunnelLog.err" -Pattern $prov.Pattern -ErrorAction SilentlyContinue |
+                            Select-Object -First 1
+                        if ($m) { $candidate = $m.Matches[0].Value }
                     }
-                    if (-not $connected) { $why = "it never connected to Cloudflare: $(Get-TunnelError $TunnelLog)" }
-                    $deadline = (Get-Date).AddSeconds(25)
-                    while ($connected -and -not $inPublicDns -and (Get-Date) -lt $deadline) {
-                        try { Resolve-DnsName ([uri]$candidate).Host -Server 1.1.1.1 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; $inPublicDns = $true }
-                        catch { Start-Sleep -Milliseconds 500 }
-                    }
-                }
+                    $why = if ($candidate) { "" } elseif ($tunnelProc.HasExited) { "it closed: $(Get-TunnelError $TunnelLog)" } else { "no link after 20 s: $(Get-TunnelError $TunnelLog)" }
 
-                # Any HTTP answer (MediaMTX says 404 before the stream starts) proves the tunnel is through
-                $checks = if ($candidate -and $prov.Connected -and -not $connected) { 0 } elseif ($inPublicDns) { 10 } else { 20 }
-                $lookupError = ""
-                for ($t = 0; $t -lt $checks -and -not $publicUrl -and -not $tunnelProc.HasExited; $t++) {
-                    try { Invoke-WebRequest $candidate -UseBasicParsing -TimeoutSec 5 | Out-Null; $publicUrl = $candidate }
-                    catch { if ($_.Exception.Response) { $publicUrl = $candidate } else { $lookupError = $_.Exception.Message; Start-Sleep 1 } }
-                }
-                # Connected, and the address exists: the link works. This PC just can't open it yet (slow DNS,
-                # or a filter on this network), and viewers use their own DNS, so don't throw the link away.
-                if (-not $publicUrl -and $connected -and $inPublicDns -and -not $tunnelProc.HasExited) {
-                    $publicUrl = $candidate
-                    Write-Host "Note: the link is working, but this PC can't open it yet ($lookupError). Viewers aren't affected."
-                }
-                if ($publicUrl) { $publicVia = $prov.Name }
-                else {
-                    if ($candidate -and -not $why) { $why = "the link didn't answer: $lookupError" }
-                    Write-Host "$($prov.Name) didn't work: $why"
+                    # A new Cloudflare address doesn't exist in DNS for the first few seconds. Asking this PC's DNS
+                    # during that time makes it remember "doesn't exist" for 60 s (measured), which used to fail the
+                    # check below even though the link was fine. So first wait for it to connect, and for the
+                    # address to exist on Cloudflare's own DNS, which doesn't get stuck like that.
+                    $connected = $false; $inPublicDns = $false
+                    if ($candidate -and $prov.Connected) {
+                        for ($t = 0; $t -lt 60 -and -not $connected -and -not $tunnelProc.HasExited; $t++) {
+                            $connected = [bool](Select-String -Path $TunnelLog, "$TunnelLog.err" -Pattern $prov.Connected -ErrorAction SilentlyContinue)
+                            if (-not $connected) { Start-Sleep -Milliseconds 500 }
+                        }
+                        if (-not $connected) { $why = "it never connected to Cloudflare: $(Get-TunnelError $TunnelLog)" }
+                        $deadline = (Get-Date).AddSeconds(25)
+                        while ($connected -and -not $inPublicDns -and (Get-Date) -lt $deadline) {
+                            try { Resolve-DnsName ([uri]$candidate).Host -Server 1.1.1.1 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; $inPublicDns = $true }
+                            catch { Start-Sleep -Milliseconds 500 }
+                        }
+                    }
+
+                    # Any HTTP answer (MediaMTX says 404 before the stream starts) proves the tunnel is through
+                    $checks = if ($candidate -and $prov.Connected -and -not $connected) { 0 } elseif ($inPublicDns) { 10 } else { 20 }
+                    $lookupError = ""
+                    for ($t = 0; $t -lt $checks -and -not $publicUrl -and -not $tunnelProc.HasExited; $t++) {
+                        try { Invoke-WebRequest $candidate -UseBasicParsing -TimeoutSec 5 | Out-Null; $publicUrl = $candidate }
+                        catch { if ($_.Exception.Response) { $publicUrl = $candidate } else { $lookupError = $_.Exception.Message; Start-Sleep 1 } }
+                    }
+                    # Connected, and the address exists: the link works. This PC just can't open it yet (slow DNS,
+                    # or a filter on this network), and viewers use their own DNS, so don't throw the link away.
+                    if (-not $publicUrl -and $connected -and $inPublicDns -and -not $tunnelProc.HasExited) {
+                        $publicUrl = $candidate
+                        Say "Note: the link is working, but this PC can't open it yet ($lookupError). Viewers aren't affected."
+                    }
+                    if ($publicUrl) { $publicVia = $prov.Name }
+                    else {
+                        if ($candidate -and -not $why) { $why = "the link didn't answer: $lookupError" }
+                        Say "$($prov.Name) didn't work: $why"
+                    }
                 }
             }
+            if (-not $publicUrl -and $tunnelProc -and -not $tunnelProc.HasExited) { Stop-Process -Id $tunnelProc.Id -Force; $state.Proc = $null }
+            @{ Url = $publicUrl; Via = $publicVia }
         }
+        $opened = & $openLink $providers $ToolsDir $PID $tunnelState
+        $publicUrl = $opened.Url; $publicVia = $opened.Via
         if (-not $publicUrl) {
-            if ($tunnelProc -and -not $tunnelProc.HasExited) { Stop-Process -Id $tunnelProc.Id -Force }
             Write-Host "Could not open a public link with $(($providers | ForEach-Object { $_.Id }) -join ' / ') (logs: $ToolsDir\tunnel-$PID-*.log). Streaming locally only." -ForegroundColor Red
+        } else {
+            # Watchdog: if the link service's program closes (its connection dropped, or Pinggy's hour is up), open a
+            # link again without stopping the stream. Viewers on Wi-Fi or this PC aren't interrupted at all, and a
+            # permanent link comes back the same. A free service gives a new address, which the window shows.
+            $watch = [powershell]::Create()
+            [void]$watch.AddScript({
+                    param($openText, $providers, $ToolsDir, $tag, $state, $streamName)
+                    $ErrorActionPreference = "Continue"
+                    $open = [scriptblock]::Create($openText)
+                    $wait = 5
+                    while ($true) {
+                        Start-Sleep -Seconds 3
+                        $p = $state.Proc
+                        if ($p -and -not $p.HasExited) { continue }
+                        [Console]::Out.WriteLine("The public link service disconnected. Reconnecting..."); [Console]::Out.Flush()
+                        try { $again = & $open $providers $ToolsDir $tag $state } catch { $again = $null }
+                        if ($again -and $again.Url) {
+                            $wait = 5
+                            [Console]::Out.WriteLine("PUBLIC LINK (via $($again.Via)) - reconnected:")
+                            [Console]::Out.WriteLine("     $($again.Url)/$streamName/index.m3u8")
+                            [Console]::Out.Flush()
+                        } else {
+                            [Console]::Out.WriteLine("Could not reopen the public link. Trying again in $wait s."); [Console]::Out.Flush()
+                            Start-Sleep -Seconds $wait
+                            $wait = [Math]::Min(120, $wait * 2)
+                        }
+                    }
+                }).AddArgument($openLink.ToString()).AddArgument($providers).AddArgument($ToolsDir).AddArgument($PID).AddArgument($tunnelState).AddArgument($StreamName)
+            [void]$watch.BeginInvoke()
         }
     }
 
@@ -539,5 +568,5 @@ try {
 }
 finally {
     if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-    if ($tunnelProc -and -not $tunnelProc.HasExited) { Stop-Process -Id $tunnelProc.Id -Force }
+    if ($tunnelState.Proc -and -not $tunnelState.Proc.HasExited) { Stop-Process -Id $tunnelState.Proc.Id -Force }
 }
