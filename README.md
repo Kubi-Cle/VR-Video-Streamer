@@ -4,7 +4,7 @@ Stream your desktop monitor, application windows, local video files, music files
 
 **[Download the latest version](https://github.com/Kubi-Cle/VR-Video-Streamer/releases/latest)**
 
-<img src="branding/screenshot.png" alt="The VR Video Streamer window" width="700">
+<img src="branding/screenshot-1.2.1.png" alt="The VR Video Streamer window" width="700">
 
 ## Features
 
