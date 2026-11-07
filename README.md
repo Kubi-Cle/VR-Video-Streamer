@@ -10,21 +10,24 @@ Stream your desktop monitor, application windows, local video files, music files
 
 - Stream a desktop monitor, application windows, local video files, music files, or online video
 - Search YouTube and queue videos while you're streaming
-- Find subtitles online or generate them with AI
-- Share a public link, with a live preview of what viewers see
+- Mix sound from several programs and devices, each with its own volume, and mute them on your PC
+- Find subtitles online, generate them with AI, or translate them into your language
+- Share a Video Player Link through Cloudflare, with a live preview of what viewers see
+- Control playback from your phone with a remote control link, or open links with a QR code
+- Reconnects by itself if the link drops, and updates itself in one click
 
 ## Get started
 
 Needs Windows 10 (version 2004 or newer) or Windows 11, 64-bit.
 
-1. Download `VR-Video-Streamer-1.2.0.zip` from the link above and extract it.
+1. Download `VR-Video-Streamer-1.2.1.zip` from the link above and extract it.
 2. Open `VR Video Streamer.exe`. It offers to download FFmpeg, the video tool it needs, on first run.
-3. Select what you would video and audio source you would like to stream.
-4. Press **Start streaming** and paste the public link into a video player in your VR video player.
+3. Select the video and sound you'd like to stream.
+4. Press **Start streaming** and paste the Video Player Link into a video player in your VR game.
 
 Windows may show a warning because the program isn't digitally signed. [`README.txt`](README.txt) has the full steps and troubleshooting.
 
-Only stream what you have the right to share. Viewers can see everything on the screen or window you stream, including passwords and notifications, and public links pass through a third-party service.
+Only stream what you have the right to share. Viewers can see everything on the screen or window you stream, including passwords and notifications, and links pass through Cloudflare. Some countries and internet providers block or slow down Cloudflare links at times, so some viewers may have trouble watching.
 
 Need help? Press **Copy problem report** in the program and paste it into a [new issue](https://github.com/Kubi-Cle/VR-Video-Streamer/issues).
 

@@ -133,14 +133,12 @@ function Update-WindowList {
 }
 Update-WindowList
 
-# Automatic tries Cloudflare, then localhost.run, then Pinggy (whose links show your IP)
-$tunnels = @(@{ Name = "Automatic"; Value = "auto" }, @{ Name = "Cloudflare"; Value = "cloudflare" },
-             @{ Name = "localhost.run"; Value = "localhost.run" }, @{ Name = "Pinggy (shows your IP)"; Value = "pinggy" },
-             @{ Name = "My permanent link"; Value = "permanent" })
+# Public links go through Cloudflare only: a free quick link, or your own permanent one
+$tunnels = @(@{ Name = "Cloudflare Temporary"; Value = "cloudflare" }, @{ Name = "Cloudflare Permanent"; Value = "permanent" })
 foreach ($t in $tunnels) { [void]$cbTunnel.Items.Add($t.Name) }
 $cbTunnel.SelectedIndex = [Math]::Max(0, [array]::IndexOf(@($tunnels | ForEach-Object { $_.Value }), "$($script:settings.Tunnel)"))
-$chkPublic.IsChecked = [bool]$script:settings.Public
-$cbTunnel.IsEnabled = [bool]$chkPublic.IsChecked
+# The public link is the only way to watch, so it's always on (the box stays hidden, for the code that asks it)
+$chkPublic.IsChecked = $true
 $qualities = @(
     @{ Name = "1080p  (4 Mbps)"; Height = 1080; Bitrate = "4M"; Mbps = 4.0 },
     @{ Name = "720p  (2.5 Mbps)"; Height = 720; Bitrate = "2500k"; Mbps = 2.5 },
@@ -159,28 +157,20 @@ $cbEncoder.SelectedIndex = if ($savedEncoder -eq 0 -or ($savedEncoder -gt 0 -and
                            elseif ($hasIntel -and (Test-Encoder "h264_qsv")) { 3 }
                            else { 0 }
 
-$linkBoxes = @{ public = $tbPublic; lan = $tbLan; local = $tbLocal; rtsp = $tbRtsp; short = $tbShort; remote = $tbRemote }
-foreach ($pair in @(@($btnCopyPublic, $tbPublic), @($btnCopyLan, $tbLan), @($btnCopyLocal, $tbLocal), @($btnCopyRtsp, $tbRtsp), @($btnCopyRemote, $tbRemote))) {
+$linkBoxes = @{ public = $tbPublic; remote = $tbRemote }
+foreach ($pair in @(@($btnCopyPublic, $tbPublic), @($btnCopyRemote, $tbRemote))) {
     $pair[0].Tag = $pair[1]
     $pair[0].Add_Click({ param($s) if ($s.Tag.Text -match '^\w+://') {
                 $lblStatus.Text = if (Copy-ToClipboard $s.Tag.Text) { "Copied: $($s.Tag.Text)" } else { "Couldn't copy, the clipboard is busy. Try again." }
             } })
 }
-foreach ($pair in @(@($btnQrPublic, $tbPublic, "Public link"), @($btnQrShort, $tbShort, "Short link"), @($btnQrRemote, $tbRemote, "Remote control"), @($btnQrLan, $tbLan, "Headset on your Wi-Fi"))) {
+foreach ($pair in @(@($btnQrPublic, $tbPublic, "Video player link"), @($btnQrRemote, $tbRemote, "Remote control"))) {
     $pair[0].Tag = @{ Box = $pair[1]; Title = $pair[2] }
     $pair[0].Add_Click({ param($s)
             if ($s.Tag.Box.Text -match '^\w+://') { Show-QrCode $window $s.Tag.Title $s.Tag.Box.Text }
             else { $lblStatus.Text = "That link isn't ready yet. Start streaming first." }
         })
 }
-
-# The short link is the same stream at a shorter address, served by the remote control's proxy (RemoteProxy.cs)
-function Reset-ShortLink { $tbShort.Text = "" }
-$btnShort.Add_Click({
-        if ($tbShort.Text -match '^https://') {
-            $lblStatus.Text = if (Copy-ToClipboard $tbShort.Text) { "Copied: $($tbShort.Text)" } else { "Couldn't copy, the clipboard is busy. Try again." }
-        } else { $lblStatus.Text = "The short link appears once the public link is ready." }
-    })
 
 # --- Behaviour ---
 function Show-If($control, $visible) { $control.Visibility = if ($visible) { "Visible" } else { "Collapsed" } }
@@ -196,7 +186,7 @@ function Update-Enabled {
     foreach ($c in $rbMonitor, $rbWindow, $rbFile, $cbMonitor, $pnlWindow, $pnlFile, $pnlOptions) { $c.IsEnabled = -not $running }
     Show-If $btnStart (-not $running)
     Show-If $btnStop $running
-    $btnStart.IsEnabled = -not $script:startingYouTube
+    $btnStart.IsEnabled = -not $script:startingYouTube -and $script:updateState -ne "downloading"
     Show-If $cbMonitor $rbMonitor.IsChecked
     Show-If $pnlWindow $rbWindow.IsChecked
     Show-If $pnlFile $isFile
@@ -337,7 +327,6 @@ function Send-SoundPicks {
 $btnRefreshSound.Add_Click({ Update-SoundList })
 foreach ($c in $rbMonitor, $rbWindow, $rbFile) { $c.Add_Checked({ if ($script:windowReady) { Update-Enabled; Update-SoundList } }) }
 $btnRefresh.Add_Click({ Update-WindowList })
-$chkPublic.Add_Click({ $cbTunnel.IsEnabled = [bool]$chkPublic.IsChecked })
 
 # What's picked in the window is remembered for next time (settings.json, written shortly after each change)
 function Save-Choices {
@@ -426,7 +415,7 @@ $window.Add_PreviewDrop({ param($s, $e)
         $onQueue = $pnlQueue.IsVisible -and $at.X -ge 0 -and $at.Y -ge 0 -and $at.X -le $pnlQueue.ActualWidth -and $at.Y -le $pnlQueue.ActualHeight
         if ($onQueue -and $pnlQueue.IsEnabled) { Add-ToQueue $files }
         elseif ($script:player) { Switch-File $files[0] }
-        elseif ($script:proc) { Show-Notice "You can only swap a file for another file. To stream this one, press Stop first (the public link will change)." }
+        elseif ($script:proc) { Show-Notice "You can only swap a file for another file. To stream this one, press Stop first (the video player link will change)." }
         else { Set-File $files[0]; $script:startItem = $null }
     })
 $window.Add_ContentRendered({ [void][UI.Win]::SetForegroundWindow((New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle) })
@@ -1404,7 +1393,6 @@ function Stop-Stream {
         if ($script:remote) { $script:remote.Secret = $null; $script:remote.State = "{}" }
         $script:remoteNotice = ""
     }
-    Reset-ShortLink
     $tbRemote.Text = ""
     $script:remoteLinkFor = $null
     $script:publicShown = $null
@@ -1430,7 +1418,7 @@ function Start-Recovery($why) {
         $script:proc = $null
         foreach ($tb in $linkBoxes.Values) { $tb.Text = "" }
         Update-Enabled
-        $script:recoverNotice = "$why It restarted by itself$(if ($hadPublic) { ', so viewers need the new public link, copied to the clipboard once it opens' })."
+        $script:recoverNotice = "$why It restarted by itself$(if ($hadPublic) { ', so viewers need the new video player link, copied to the clipboard once it opens' })."
         $script:recoverNoticeAt = $now
         $btnStart.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
     } finally { $script:recovering = $false }
@@ -1450,7 +1438,7 @@ function Test-PublicLink {
         $script:linkCheckBusy = $false
         if (-not $script:proc) { return }
         $script:publicFails = if ($status -eq 200) { 0 } else { [int]$script:publicFails + 1 }
-        if ($script:publicFails -ge 4) { $script:publicFails = 0; [void](Start-Recovery "The public link stopped working.") }
+        if ($script:publicFails -ge 4) { $script:publicFails = 0; [void](Start-Recovery "The video player link stopped working.") }
     }
 }
 
@@ -1496,12 +1484,11 @@ function New-RemoteSecret {
 # The remote link is the public link's address plus the secret, once the link is up. A permanent link set up before
 # the remote existed points past it, so that's checked rather than handing out a link that can't work.
 function Update-RemoteLink {
-    if (-not $script:remote -or -not $script:remote.Secret -or $tbPublic.Text -notmatch '^(https://[^/]+)/') { $tbRemote.Text = ""; $tbShort.Text = ""; $script:remoteLinkFor = $null; return }
+    if (-not $script:remote -or -not $script:remote.Secret -or $tbPublic.Text -notmatch '^(https://[^/]+)/') { $tbRemote.Text = ""; $script:remoteLinkFor = $null; return }
     $link = "$($Matches[1])/remote/$($script:remote.Secret)/"
     if ($script:remoteLinkFor -eq $link) { return }
     $script:remoteLinkFor = $link
     $tbRemote.Text = $link
-    $tbShort.Text = "$($Matches[1])$([RemoteProxy]::ShortPath)"
     Start-SubtitleTask {
         param($link)
         try { (Invoke-WebRequest "${link}state" -UseBasicParsing -TimeoutSec 15).StatusCode } catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { -1 } }
@@ -1509,7 +1496,6 @@ function Update-RemoteLink {
         param($status, $why, $link)
         if ($tbRemote.Text -ne $link -or $status -eq 200 -or $status -eq -1) { return }   # -1: this PC can't reach it yet, which isn't the link's fault
         $tbRemote.Text = if ($script:publicVia -eq "Your permanent link") { "(Change your permanent link's URL to 127.0.0.1:8890 in Cloudflare to use this)" } else { "(The remote control isn't reachable through this link)" }
-        $tbShort.Text = ""   # served by the same proxy, so it isn't there either
     } $link
 }
 
@@ -1615,7 +1601,10 @@ function Get-ProblemReport {
     # Names and addresses aren't needed to find a problem, and this may get pasted somewhere public
     # The profile folder's name can differ from the account's, so both go, and any path under Users whatever it's called
     $profileName = Split-Path $env:USERPROFILE -Leaf
-    $cleaned = (($lines | ForEach-Object { "$_" }) -join "`r`n") -replace '(?i)\b[a-z]:\\Users\\[^\\\s"'']+', 'C:\Users\<user>' -replace "\b$([regex]::Escape($env:USERNAME))\b", '<user>' -replace "\b$([regex]::Escape($profileName))\b", '<user>' -replace 'https?://[^\s"'']+', '<link>' -replace '\b\d{1,3}(\.\d{1,3}){3}\b', '<address>'
+    $cleaned = (($lines | ForEach-Object { "$_" }) -join "`r`n") -replace '(?i)\b[a-z]:\\Users\\[^\\\s"'']+', 'C:\Users\<user>' -replace "\b$([regex]::Escape($env:USERNAME))\b", '<user>' -replace "\b$([regex]::Escape($profileName))\b", '<user>' -replace 'https?://[^\s"'']+', '<link>' -replace '(?i)\b[a-z0-9-]+\.trycloudflare\.com\b', '<link>' -replace '\b\d{1,3}(\.\d{1,3}){3}\b', '<address>'
+    # Your own domain and the remote control's secret, wherever they turn up without the https:// in front
+    if ("$($script:settings.PermanentHost)".Trim()) { $cleaned = $cleaned -replace [regex]::Escape("$($script:settings.PermanentHost)".Trim()), '<your domain>' }
+    if ($script:remote -and $script:remote.Secret) { $cleaned = $cleaned.Replace($script:remote.Secret, '<secret>') }
     # Added afterwards, since a version number looks just like an address
     "Program version: $((Get-Item -LiteralPath (Join-Path (Split-Path $PSScriptRoot) 'VR Video Streamer.exe') -ErrorAction SilentlyContinue).VersionInfo.FileVersion)`r`n$cleaned"
 }
@@ -1754,9 +1743,8 @@ $timer.Add_Tick({ try {
             $script:publicVia = $newest.Groups[1].Value
             $linkBoxes.public.Text = $script:publicShown
             $script:linkCopied = Copy-ToClipboard $linkBoxes.public.Text
-            Reset-ShortLink
             if ($changed) {
-                $script:recoverNotice = "The public link service dropped and reconnected by itself, so viewers on the public link need the new one$(if ($script:linkCopied) { ' (copied)' }). Everyone else wasn't interrupted."
+                $script:recoverNotice = "The link service dropped and reconnected by itself, so viewers need the new video player link$(if ($script:linkCopied) { ' (copied)' })."
                 $script:recoverNoticeAt = Get-Date
                 $script:publicFails = 0
             }
@@ -1767,9 +1755,6 @@ $timer.Add_Tick({ try {
         $tunnelStep = ([regex]::Matches($out, 'Opening public link via ([^\r\n]+?)\.\.\.') | Select-Object -Last 1)
         $publicFailed = $chkPublic.IsChecked -and $out -match 'Could not open a public link'
         if ($publicFailed) { $linkBoxes.public.Text = "(failed - press Stop, then Start to try again)" }
-        if (-not $linkBoxes.lan.Text -and $out -match '(http://(?!127\.)[\d.]+:8888/\S+)') { $linkBoxes.lan.Text = $Matches[1] }
-        if (-not $linkBoxes.local.Text -and $out -match '(http://127\.0\.0\.1:8888/\S+)') { $linkBoxes.local.Text = $Matches[1] }
-        if (-not $linkBoxes.rtsp.Text -and $out -match '(rtspt://127\.0\.0\.1:\S+)') { $linkBoxes.rtsp.Text = $Matches[1] }
 
         $pl = $script:player
         if ($pl) {
@@ -1839,9 +1824,9 @@ $timer.Add_Tick({ try {
             if ($script:ytNotice) { $lines += $script:ytNotice }
             if ($script:subsNotice) { $lines += $script:subsNotice }
             if ($pl -and $script:slowTicks -gt 0) { $lines += "The video is arriving more slowly than it plays, so viewers will see stutters." }
-            if ($script:linkReconnecting) { $lines += "The public link service dropped. Reconnecting by itself... Viewers on Wi-Fi and this PC aren't affected." }
-            elseif ($publicFailed) { $lines += "Public link failed. Only you and your Wi-Fi can watch. Stop, pick another service next to 'public link', and Start again." }
-            elseif ($linkBoxes.public.Text) { $lines += "Public link (via $($script:publicVia))$(if ($script:linkCopied) { ' copied to clipboard' } else { ' ready: press Copy next to it' }). Anyone with it can watch until you press Stop." }
+            if ($script:linkReconnecting) { $lines += "The video player link dropped. Reconnecting by itself... The stream keeps going, and viewers get the new link." }
+            elseif ($publicFailed) { $lines += "The video player link failed, so nobody can watch. Press Stop, wait a minute, and Start again." }
+            elseif ($linkBoxes.public.Text) { $lines += "Video player link (via $($script:publicVia))$(if ($script:linkCopied) { ' copied to clipboard' } else { ' ready: press Copy next to it' }). Anyone with it can watch until you press Stop." }
             if ($soundGone) { $lines += "A program you picked for sound has closed, so viewers no longer hear it. Press Refresh list and tick another." }
             # Only for a source that's still ticked: a problem with one you've since unticked no longer matters
             $soundProblem = [regex]::Matches($out, "(?m)^Sound problem \[([^\]]+)\]: ([^\r\n]+)") | Where-Object { $script:soundFile -and @(Get-Content -LiteralPath $script:soundFile -ErrorAction SilentlyContinue | ForEach-Object { ($_ -split "`t")[0] }) -contains $_.Groups[1].Value } | Select-Object -Last 1
@@ -1856,8 +1841,8 @@ $timer.Add_Tick({ try {
             $warn = $soundGone -or $publicFailed -or $minimized -or $script:slowTicks -gt 0 -or $script:linkReconnecting
             $lblStatus.Foreground = if ($warn) { $redBrush } else { $mutedBrush }
         } elseif ($chkPublic.IsChecked -and -not $linkBoxes.public.Text) {
-            $lblStatus.Text = "Starting... opening public link" +
-                $(if ($tunnelStep) { " via $($tunnelStep.Groups[1].Value)" } else { "" }) + " (10-20 s, up to a minute if it has to try another service)"
+            $lblStatus.Text = "Starting... opening the video player link" +
+                $(if ($tunnelStep) { " via $($tunnelStep.Groups[1].Value)" } else { "" }) + " (10-20 s, up to a minute if Cloudflare is slow)"
         }
     } catch { $lblStatus.Text = "Problem updating the window: $($_.Exception.Message)" } })
 $timer.Start()
@@ -1870,6 +1855,9 @@ $quickTimer.Add_Tick({ try {
         Update-SubtitleTasks
         Update-AiSubs
         Invoke-RemoteCommands
+        if ($script:updateState -eq "downloading" -and $script:updateProgress.Total -gt 0) {
+            $lblUpdate.Text = "Downloading $([Math]::Min(100, [int](100 * $script:updateProgress.Done / $script:updateProgress.Total)))%"
+        }
         # Slider moves are gathered up rather than sent and saved dozens of times a second
         if ($script:soundDirty -and $script:soundFile) { Send-SoundPicks }
         if ($script:settingsDirty -and (-not $script:settingsSavedAt -or ((Get-Date) - $script:settingsSavedAt).TotalSeconds -ge 1)) {
@@ -1882,30 +1870,160 @@ $quickTimer.Add_Tick({ try {
     } catch { $lblStatus.Text = "Problem updating the window: $($_.Exception.Message)" } })
 $quickTimer.Start()
 
-# --- Is there a newer version? Asked of GitHub once per start, in the background; nothing is downloaded. ---
+# --- Updates. The version shows in the corner. GitHub is asked once per start, in the background, and the button
+# beside it asks again. When there's a newer version, the button downloads it, checks it against its published
+# checksum, and hands over to Install-Update.ps1, which copies it over this folder once the window has closed. ---
 $script:releasesApi = "https://api.github.com/repos/Kubi-Cle/VR-Video-Streamer/releases/latest"
+$script:appRoot = Split-Path $PSScriptRoot
+$script:updateFolder = Join-Path $script:AppData "update"
+$script:updateState = "idle"       # idle, checking, available, downloading
+$script:update = $null             # what GitHub has: Version, Page, Zip, Sum, Size
+$script:updateProgress = [hashtable]::Synchronized(@{ Done = [long]0; Total = [long]0 })
 function Get-ProgramVersion {
-    $v = (Get-Item -LiteralPath (Join-Path (Split-Path $PSScriptRoot) 'VR Video Streamer.exe') -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+    $v = (Get-Item -LiteralPath (Join-Path $script:appRoot 'VR Video Streamer.exe') -ErrorAction SilentlyContinue).VersionInfo.FileVersion
     $parsed = $null
     if ([version]::TryParse("$v", [ref]$parsed)) { New-Object version($parsed.Major, $parsed.Minor, [Math]::Max(0, $parsed.Build)) }
 }
-if ($script:settings.UpdateCheck -and (Get-ProgramVersion)) {
+$lblVersion.Text = if (Get-ProgramVersion) { "Version $(Get-ProgramVersion)" } else { "" }
+function Set-UpdateButton($text, $tip, $glyph = [char]0xE72C) {
+    $lblUpdate.Text = $text
+    $icoUpdate.Text = $glyph
+    $btnUpdate.ToolTip = $tip
+}
+
+function Start-UpdateCheck([switch]$Quiet) {
+    if ($script:updateState -eq "checking" -or $script:updateState -eq "downloading" -or -not (Get-ProgramVersion)) { return }
+    $script:updateState = "checking"
+    if (-not $Quiet) { Set-UpdateButton "Checking..." "Asking GitHub for the newest version" }
     Start-SubtitleTask {
         param($api)
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $r = Invoke-RestMethod $api -TimeoutSec 15 -Headers @{ "User-Agent" = "VR Video Streamer"; Accept = "application/vnd.github+json" }
-        @{ Tag = "$($r.tag_name)"; Page = "$($r.html_url)" }
+        $zip = @($r.assets | Where-Object { $_.name -match '^VR-Video-Streamer-[\d.]+\.zip$' })[0]
+        $sum = if ($zip) { @($r.assets | Where-Object { $_.name -eq "$($zip.name).sha256.txt" })[0] }
+        @{ Tag = "$($r.tag_name)"; Page = "$($r.html_url)"; Zip = "$($zip.browser_download_url)"; Sum = "$($sum.browser_download_url)"; Size = [long]$zip.size }
     } @($script:releasesApi) {
-        param($latest, $why)
-        if (-not $latest -or $latest.Tag -notmatch '(\d+)\.(\d+)(?:\.(\d+))?') { return }   # offline, or GitHub busy: try again next start
+        param($latest, $why, $quiet)
+        $script:updateState = "idle"
+        if (-not $latest -or $latest.Tag -notmatch '(\d+)\.(\d+)(?:\.(\d+))?') {
+            # Offline, or GitHub busy. A check at start says nothing; it's tried again next time.
+            if (-not $quiet) { Set-UpdateButton "Couldn't check" "GitHub didn't answer$(if ($why) { ": $why" }). Click to try again." }
+            return
+        }
         $theirs = New-Object version([int]$Matches[1], [int]$Matches[2], [int]("0$($Matches[3])"))
-        if ($theirs -le (Get-ProgramVersion) -or $latest.Page -notmatch '^https://github\.com/') { return }
-        $lblUpdate.Text = "Version $theirs is available"
-        $btnUpdate.Tag = $latest.Page
-        Show-If $btnUpdate $true
+        if ($theirs -le (Get-ProgramVersion)) {
+            if (-not $quiet) { Set-UpdateButton "Up to date" "You have the newest version. Click to check again." ([char]0xE73E) }
+            return
+        }
+        # Only files from this project's own GitHub releases are downloaded
+        $from = '^https://github\.com/Kubi-Cle/[\w.-]+/releases/download/'
+        $script:update = @{ Version = $theirs; Page = $latest.Page; Zip = $latest.Zip; Sum = $latest.Sum; Size = $latest.Size }
+        $script:updateState = "available"
+        if ($latest.Zip -notmatch $from -or $latest.Sum -notmatch $from) { $script:update.Zip = $null }
+        Set-UpdateButton "Update to $theirs" "Downloads and installs version $theirs, then restarts the program. Your settings are kept." ([char]0xE896)
+    } $Quiet.IsPresent
+}
+
+# Can this folder be written to? A copy in Program Files can't be without asking for admin, so it gets the download page.
+function Test-AppFolderWritable {
+    $probe = Join-Path $script:appRoot "update-check-$PID.tmp"
+    try { [IO.File]::WriteAllText($probe, "x"); Remove-Item -LiteralPath $probe -Force; $true } catch { $false }
+}
+
+function Open-UpdatePage {
+    if ("$($script:update.Page)" -match '^https://github\.com/') { Start-Process "$($script:update.Page)" }
+}
+
+function Start-UpdateDownload {
+    $u = $script:update
+    if ($script:proc -and -not $script:proc.HasExited) { Show-Notice "Stop streaming first, then press Update again."; return }
+    if (-not $u.Zip -or -not (Test-AppFolderWritable)) {
+        $why = if (-not $u.Zip) { "This version can't be installed automatically." } else { "The program can't change its own folder ($script:appRoot), so it can't install updates itself." }
+        if ((Show-Message $window "$why`n`nOpen the download page instead?" @("Open download page", "Cancel")) -eq "Open download page") { Open-UpdatePage }
+        return
+    }
+    $size = if ($u.Size -gt 0) { " ($([Math]::Round($u.Size / 1MB)) MB)" } else { "" }
+    $answer = Show-Message $window ("Download version $($u.Version)$size and install it?`n`nThe program closes while the new files are copied in, then opens again by itself. " +
+        "Your settings, FFmpeg and other downloads are kept.") @("Update", "Not now", "See what's new")
+    if ($answer -eq "See what's new") { Open-UpdatePage; return }
+    if ($answer -ne "Update") { return }
+    $script:updateState = "downloading"
+    $script:updateProgress.Done = 0; $script:updateProgress.Total = $u.Size
+    Set-UpdateButton "Downloading..." "Downloading version $($u.Version)" ([char]0xE896)
+    Update-Enabled
+    Start-SubtitleTask {
+        param($zipUrl, $sumUrl, $folder, $progress)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        $sumText = (Invoke-WebRequest $sumUrl -UseBasicParsing -TimeoutSec 30 -UserAgent "VR Video Streamer").Content
+        if ($sumText -is [byte[]]) { $sumText = [Text.Encoding]::ASCII.GetString($sumText) }
+        $expected = ("$sumText".Trim() -split '\s+')[0]
+        if ($expected -notmatch '^[0-9A-Fa-f]{64}$') { throw "The release's checksum file doesn't look right." }
+        $zip = Join-Path $folder "update.zip"
+        $request = [Net.HttpWebRequest]::Create($zipUrl)
+        $request.UserAgent = "VR Video Streamer"
+        $request.Timeout = 30000; $request.ReadWriteTimeout = 60000
+        $response = $request.GetResponse()
+        try {
+            if ($response.ContentLength -gt 0) { $progress.Total = $response.ContentLength }
+            $in = $response.GetResponseStream()
+            $out = [IO.File]::Create($zip)
+            try {
+                $buffer = New-Object byte[] 262144
+                while (($n = $in.Read($buffer, 0, $buffer.Length)) -gt 0) { $out.Write($buffer, 0, $n); $progress.Done += $n }
+            } finally { $out.Dispose(); $in.Dispose() }
+        } finally { $response.Close() }
+        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $expected.ToUpper()) { throw "The download didn't match its published checksum, so it wasn't installed. Try again later." }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $folder "new"))
+        Remove-Item -LiteralPath $zip -Force
+        $new = Join-Path $folder "new\VR Video Streamer"
+        foreach ($need in "VR Video Streamer.exe", "app\StreamUI.ps1", "app\Install-Update.ps1") {
+            if (-not (Test-Path -LiteralPath (Join-Path $new $need))) { throw "The download is missing $need." }
+        }
+        $new
+    } @($u.Zip, $u.Sum, $script:updateFolder, $script:updateProgress) {
+        param($new, $why)
+        if ($why -or -not $new) {
+            $script:updateState = "available"
+            Update-Enabled
+            Set-UpdateButton "Update to $($script:update.Version)" "Downloads and installs version $($script:update.Version), then restarts the program." ([char]0xE896)
+            Show-Notice "The update didn't download: $(if ($why) { $why } else { 'no files arrived' })"
+            return
+        }
+        Install-DownloadedUpdate $new
     }
 }
-$btnUpdate.Add_Click({ if ("$($btnUpdate.Tag)" -match '^https://github\.com/') { Start-Process "$($btnUpdate.Tag)" } })
+
+# The window can't replace its own files while it's open, so a separate PowerShell does it after this one closes.
+# It's started through WMI so it isn't part of this window's process group, which takes everything started
+# from it down when the window closes.
+function Install-DownloadedUpdate($new) {
+    $installer = Join-Path $script:updateFolder "Install-Update.ps1"
+    Copy-Item -LiteralPath (Join-Path $new "app\Install-Update.ps1") -Destination $installer -Force
+    $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $command = "`"$ps`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$installer`" -WaitFor $PID -From `"$new`" -To `"$script:appRoot`""
+    $started = $null
+    try { $started = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $command; CurrentDirectory = $script:updateFolder } -ErrorAction Stop } catch { }
+    if (-not $started -or $started.ReturnValue -ne 0) {
+        $script:updateState = "available"
+        Update-Enabled
+        Set-UpdateButton "Update to $($script:update.Version)" "Downloads and installs version $($script:update.Version), then restarts the program." ([char]0xE896)
+        if ((Show-Message $window "The update downloaded, but Windows wouldn't start the installer.`n`nOpen the download page instead?" @("Open download page", "Cancel")) -eq "Open download page") { Open-UpdatePage }
+        return
+    }
+    Set-UpdateButton "Restarting..." "Installing version $($script:update.Version)" ([char]0xE896)
+    $window.Close()
+}
+
+$btnUpdate.Add_Click({
+        switch ($script:updateState) {
+            "idle" { Start-UpdateCheck }
+            "available" { Start-UpdateDownload }
+        }
+    })
+if ($script:settings.UpdateCheck) { Start-UpdateCheck -Quiet }
 
 $script:windowReady = $true
 Update-SoundList
@@ -1922,4 +2040,16 @@ $script:settings.SoundVolumes = (@($script:soundVolumes.GetEnumerator() | Where-
 try { Save-Settings $script:settings } catch { }
 $script:overlay.Stop()
 Remove-Item -LiteralPath $subtitleTextFile -Force -ErrorAction SilentlyContinue
+# The stream's messages and the link service's logs name the stream's link, so they don't outlive the window.
+# The stream script is stopped outright, so its own cleanup doesn't run, and cloudflared holds its log open until
+# Windows has taken it down too: wait for that (a few seconds at most), then delete them.
+if ($script:proc) { try { [void]$script:proc.WaitForExit(5000) } catch { } }
+$until = (Get-Date).AddSeconds(5)
+while ((Get-Date) -lt $until -and @(Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($toolsFolder, [StringComparison]::OrdinalIgnoreCase) }).Count) { Start-Sleep -Milliseconds 200 }
+$leftovers = @(Get-ChildItem -LiteralPath $toolsFolder -Filter "tunnel-*.log*" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) + @($script:OutLog, $script:ErrLog)
+foreach ($try in 1..5) {
+    $leftovers = @($leftovers | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Where-Object { try { Remove-Item -LiteralPath $_ -Force -ErrorAction Stop; $false } catch { $true } })
+    if (-not $leftovers.Count) { break }
+    Start-Sleep -Milliseconds 300
+}
 if ($script:ytWindow) { try { $script:ytWindow.Close() } catch { } }

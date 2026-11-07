@@ -37,9 +37,9 @@ param(
     [switch]$ListMonitors,
     [switch]$ListAudio,
     [switch]$Pick,                      # ask which monitor to stream (used by the desktop shortcut)
-    [switch]$Public,                    # also make a public https link via a free tunnel service
-    [ValidateSet("auto", "cloudflare", "localhost.run", "pinggy", "permanent")]
-    [string]$Tunnel = "auto",           # which service makes the public link; auto = try them in order
+    [switch]$Public,                    # also make a public https link through Cloudflare
+    [ValidateSet("auto", "cloudflare", "permanent")]
+    [string]$Tunnel = "auto",           # a free Cloudflare quick link (auto = cloudflare), or your permanent Cloudflare link
     [string]$PermanentHost = "",        # with -Tunnel permanent: your address, e.g. stream.example.com (token in $env:TUNNEL_TOKEN)
     [int]$TunnelPort = 8888,            # what the public link points at: MediaMTX, or StreamUI.ps1's RemoteProxy in front of it
     [string]$PipeInput = "",            # used by StreamUI.ps1: read raw frames + PCM from \\.\pipe\<name>-v / -a
@@ -111,8 +111,8 @@ if (-not (Test-Path $MediaMtxExe)) {
 }
 
 # HLS as plain MPEG-TS: the most compatible format for AVPro on Android/standalone headsets.
-# Only HLS, which viewers can only watch, is reachable from other devices. The ports that accept a stream
-# being sent in stay on this PC, so nobody on the network can replace what's showing.
+# Every port stays on this PC: viewers reach the stream only through the Cloudflare link, so nobody on the
+# network can watch without it or replace what's showing.
 @"
 logLevel: warn
 api: yes
@@ -128,7 +128,7 @@ protocols: [tcp]
 rtmp: yes
 rtmpAddress: 127.0.0.1:1935
 hls: yes
-hlsAddress: :8888
+hlsAddress: 127.0.0.1:8888
 hlsAllowOrigin: '*'
 hlsAlwaysRemux: yes
 hlsVariant: mpegts
@@ -373,10 +373,6 @@ if ($soundFilter) { $audio += @("-af", $soundFilter) }
 $ffArgs += $maps + $video + $audio + @("-f", "flv", "rtmp://127.0.0.1:1935/$StreamName")
 
 # --- Run ---
-$lanIp = (Get-NetIPAddress -AddressFamily IPv4 |
-    Where-Object { $_.PrefixOrigin -in "Dhcp", "Manual" -and $_.IPAddress -notlike "169.254*" } |
-    Select-Object -First 1).IPAddress
-
 if ($Public -and -not (Test-Path $CloudflaredExe)) {
     Write-Host "Downloading cloudflared (for the public link)..."
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -401,36 +397,16 @@ try {
     $publicUrl = $null
     $tunnelState = [hashtable]::Synchronized(@{ Proc = $null; N = 0 })
     if ($Public) {
-        # Free tunnels that need no account, tried in order. Each gives a random https address per run.
-        # Cloudflare first (fastest, no time limit); localhost.run and Pinggy go over the SSH client
-        # built into Windows, so they need nothing installed.
-        $ssh = "$env:WINDIR\System32\OpenSSH\ssh.exe"
+        # Cloudflare only: a free quick link (a random https address per run, no account), or your own permanent one
         $target = "127.0.0.1:$TunnelPort"
-        # A throwaway key just for these tunnels: Pinggy otherwise waits at a password prompt nobody can
-        # answer in a hidden window, and IdentitiesOnly stops ssh offering your own ~/.ssh keys to them.
-        # Kept per PC, outside this folder, so sharing the folder never shares a private key.
-        $tunnelKey = Join-Path $env:LOCALAPPDATA "VRVideoStreamer\tunnel_key"
-        New-Item -ItemType Directory -Force (Split-Path $tunnelKey) | Out-Null
-        if ((Test-Path $ssh) -and -not (Test-Path $tunnelKey)) {
-            & "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '""' -C "vr-video-streamer" -f $tunnelKey
-        }
-        $sshOpts = "-T -i `"$tunnelKey`" -o IdentitiesOnly=yes -o PasswordAuthentication=no" +
-                   " -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=`"$ToolsDir\known_hosts`"" +
-                   " -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes"
         $providers = @(
             @{ Id = "cloudflare"; Name = "Cloudflare"; Exe = $CloudflaredExe; Tries = 3; Pattern = 'https://[a-z0-9-]+\.trycloudflare\.com'
                Connected = 'Registered tunnel connection'; Args = "tunnel --no-autoupdate --url http://$target" },
-            @{ Id = "localhost.run"; Name = "localhost.run"; Exe = $ssh; Tries = 2; Pattern = 'https://[a-z0-9]+\.lhr\.life'
-               Args = "$sshOpts -R 80:$target nokey@localhost.run" },
-            # Last resort: Pinggy's free addresses contain your public IP, and stop after 60 minutes
-            @{ Id = "pinggy"; Name = "Pinggy - stops after 60 min, link shows your IP"; Exe = $ssh; Tries = 2
-               Pattern = 'https://(?!dashboard\.)[a-z0-9-]+\.[a-z0-9.-]*pinggy[a-z0-9.-]*'
-               Args = "$sshOpts -p 443 -R0:$target free.pinggy.io" },
             # Your own Cloudflare tunnel: the address never changes, so it isn't read from a log.
             # Only when asked for by name, since it needs setting up. cloudflared reads the token from TUNNEL_TOKEN.
             @{ Id = "permanent"; Name = "Your permanent link"; Exe = $CloudflaredExe; Tries = 2; Fixed = "https://$PermanentHost"
                Connected = 'Registered tunnel connection'; Args = "tunnel --no-autoupdate run" }
-        ) | Where-Object { ($Tunnel -eq "auto" -and $_.Id -ne "permanent") -or $_.Id -eq $Tunnel }
+        ) | Where-Object { ($Tunnel -eq "auto" -and $_.Id -eq "cloudflare") -or $_.Id -eq $Tunnel }
         # Opens a link with the first service that works, as @{ Url; Via }. The watchdog below runs this too, on its
         # own thread, so it takes everything as arguments and writes straight to the output the window reads.
         $openLink = {
@@ -509,9 +485,8 @@ try {
         if (-not $publicUrl) {
             Write-Host "Could not open a public link with $(($providers | ForEach-Object { $_.Id }) -join ' / ') (logs: $ToolsDir\tunnel-$PID-*.log). Streaming locally only." -ForegroundColor Red
         } else {
-            # Watchdog: if the link service's program closes (its connection dropped, or Pinggy's hour is up), open a
-            # link again without stopping the stream. Viewers on Wi-Fi or this PC aren't interrupted at all, and a
-            # permanent link comes back the same. A free service gives a new address, which the window shows.
+            # Watchdog: if cloudflared closes (its connection dropped), open a link again without stopping the
+            # stream. A permanent link comes back the same; a free one gets a new address, which the window shows.
             $watch = [powershell]::Create()
             [void]$watch.AddScript({
                     param($openText, $providers, $ToolsDir, $tag, $state, $streamName)
@@ -551,14 +526,7 @@ try {
         Write-Host ""
     }
     Write-Host "Streaming $what -> up to ${Height}p @ $Fps fps ($Encoder)" -ForegroundColor Cyan
-    Write-Host "Paste one of these into a VR video player (AVPro / 'Stream' mode):" -ForegroundColor Cyan
-    Write-Host "  Steam Frame / Quest / any headset on your Wi-Fi:" -ForegroundColor Yellow
-    Write-Host "     http://${lanIp}:8888/$StreamName/index.m3u8"
-    Write-Host "  Game Window on this PC:" -ForegroundColor Yellow
-    Write-Host "     http://127.0.0.1:8888/$StreamName/index.m3u8"
-    Write-Host "  Low delay, PC only (RTSP - sound may drift a little):" -ForegroundColor Yellow
-    Write-Host "     rtspt://127.0.0.1:8554/$StreamName"
-    if (-not $publicUrl) { Write-Host "  (To let other people see it, run with -Public or answer 'y' in the shortcut menu.)" }
+    if (-not $publicUrl) { Write-Host "  No public link, so nobody can watch. Run with -Public (or answer 'y' in the shortcut menu)." -ForegroundColor Yellow }
     Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
     Write-Host ""
 
